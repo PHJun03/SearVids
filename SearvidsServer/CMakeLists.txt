@@ -6,23 +6,33 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 message(STATUS "🚀 Configuring Searvids Server (Crow HTTP Server)")
 
-# -------------------------------
+# ============================================================
 # Options
-# -------------------------------
+# ============================================================
 option(BUILD_WHISPERCPP "Automatically build whisper.cpp submodule" ON)
 option(DOWNLOAD_ONNX "Automatically download ONNX Runtime prebuilt" ON)
 option(BUILD_FFMPEG "Automatically download/build FFmpeg" ON)
 
-# -------------------------------
-# Include paths
-# -------------------------------
-include_directories(${CMAKE_SOURCE_DIR}/hnswlib)
-include_directories(${CMAKE_SOURCE_DIR}/third_party/crow/include)
-
-# -------------------------------
-# FFmpeg
-# -------------------------------
+# ============================================================
+# Include & Dependencies
+# ============================================================
 include(ExternalProject)
+include(FetchContent)
+
+# --- Fetch Crow (HTTP Framework) ---
+FetchContent_Declare(
+    crow
+    GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
+    GIT_TAG v1.2.0
+)
+FetchContent_MakeAvailable(crow)
+include_directories(${crow_SOURCE_DIR}/include)
+
+include_directories(${CMAKE_SOURCE_DIR}/hnswlib)
+
+# ============================================================
+# FFmpeg
+# ============================================================
 if(WIN32)
     if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
@@ -40,18 +50,18 @@ else()
             GIT_REPOSITORY https://git.ffmpeg.org/ffmpeg.git
             GIT_TAG n5.1
             CONFIGURE_COMMAND ./configure --disable-static --enable-shared --prefix=${FFMPEG_DIR}/install
-            BUILD_COMMAND make -j$(nproc)
+            BUILD_COMMAND $(MAKE)
             INSTALL_COMMAND make install
-            UPDATE_COMMAND ""
+            UPDATE_DISCONNECTED TRUE
         )
         include_directories(${FFMPEG_DIR}/install/include)
         link_directories(${FFMPEG_DIR}/install/lib)
     endif()
 endif()
 
-# -------------------------------
+# ============================================================
 # whisper.cpp
-# -------------------------------
+# ============================================================
 set(WHISPER_DIR "${CMAKE_SOURCE_DIR}/third_party/whisper.cpp")
 if(BUILD_WHISPERCPP)
     if(EXISTS "${WHISPER_DIR}/Makefile" OR EXISTS "${WHISPER_DIR}/CMakeLists.txt")
@@ -63,6 +73,7 @@ if(BUILD_WHISPERCPP)
                 CMAKE_ARGS -DCMAKE_BUILD_TYPE=Release
                 BUILD_BYPRODUCTS ${CMAKE_BINARY_DIR}/whisper_build/Release/whisper.lib
                 INSTALL_COMMAND ""
+                UPDATE_DISCONNECTED TRUE
             )
             add_library(whisper STATIC IMPORTED GLOBAL)
             set_target_properties(whisper PROPERTIES
@@ -79,6 +90,7 @@ if(BUILD_WHISPERCPP)
                 BUILD_BYPRODUCTS ${WHISPER_DIR}/libwhisper.a
                 INSTALL_COMMAND ""
                 UPDATE_COMMAND ""
+                UPDATE_DISCONNECTED TRUE
             )
             add_library(whisper STATIC IMPORTED GLOBAL)
             set_target_properties(whisper PROPERTIES
@@ -89,13 +101,13 @@ if(BUILD_WHISPERCPP)
         add_dependencies(whisper whispercpp_ep)
         include_directories(${WHISPER_DIR})
     else()
-        message(FATAL_ERROR "❌ whisper.cpp submodule missing")
+        message(FATAL_ERROR "❌ whisper.cpp submodule missing. Please run 'git submodule update --init --recursive'")
     endif()
 endif()
 
-# -------------------------------
+# ============================================================
 # ONNX Runtime
-# -------------------------------
+# ============================================================
 set(ONNX_VERSION "1.16.0")
 set(ONNXRUNTIME_DIR "${CMAKE_BINARY_DIR}/onnxruntime")
 set(ONNXRUNTIME_LIB_DIR "${ONNXRUNTIME_DIR}/lib")
@@ -107,21 +119,27 @@ if(DOWNLOAD_ONNX AND NOT EXISTS "${ONNXRUNTIME_DIR}")
         set(ONNX_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-win-x64-${ONNX_VERSION}.zip")
         set(ONNX_ZIP "${CMAKE_BINARY_DIR}/onnxruntime.zip")
         file(DOWNLOAD ${ONNX_URL} ${ONNX_ZIP} SHOW_PROGRESS)
-        execute_process(COMMAND powershell -Command "Expand-Archive -Path ${ONNX_ZIP} -DestinationPath ${ONNXRUNTIME_DIR}")
+        execute_process(COMMAND powershell -Command "Expand-Archive -Path ${ONNX_ZIP} -DestinationPath ${CMAKE_BINARY_DIR}")
     else()
         set(ONNX_URL "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz")
         set(ONNX_TGZ "${CMAKE_BINARY_DIR}/onnxruntime.tgz")
         file(DOWNLOAD ${ONNX_URL} ${ONNX_TGZ} SHOW_PROGRESS)
-        execute_process(COMMAND ${CMAKE_COMMAND} -E tar xfz ${ONNX_TGZ} WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+        execute_process(
+            COMMAND ${CMAKE_COMMAND} -E tar xfz ${ONNX_TGZ}
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+        )
     endif()
+    # Normalize folder name (handle nested extracted directory)
+    file(GLOB ONNX_EXTRACTED_DIR "${CMAKE_BINARY_DIR}/onnxruntime-*")
+    file(RENAME "${ONNX_EXTRACTED_DIR}" "${ONNXRUNTIME_DIR}")
 endif()
 
 include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 link_directories(${ONNXRUNTIME_LIB_DIR})
 
-# -------------------------------
+# ============================================================
 # Sources
-# -------------------------------
+# ============================================================
 set(SOURCES
     src/server_main.cpp
     src/server_api.cpp
@@ -135,13 +153,13 @@ set(SOURCES
 
 add_executable(SearvidsServer ${SOURCES})
 
-# -------------------------------
+# ============================================================
 # Linking
-# -------------------------------
+# ============================================================
 if(WIN32)
     target_link_libraries(SearvidsServer whisper avcodec avformat avutil swscale swresample ${ONNXRUNTIME_LIB_DIR}/onnxruntime.lib)
 else()
-    target_link_libraries(SearvidsServer whisper ${AVFORMAT_LIBRARIES} ${AVCODEC_LIBRARIES} ${AVUTIL_LIBRARIES} ${SWSCALE_LIBRARIES} ${SWRESAMPLE_LIBRARIES} ${ONNXRUNTIME_LIB_DIR}/libonnxruntime.so)
+    target_link_libraries(SearvidsServer whisper ${ONNXRUNTIME_LIB_DIR}/libonnxruntime.so)
 endif()
 
 set_target_properties(SearvidsServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
