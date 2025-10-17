@@ -14,6 +14,18 @@ option(DOWNLOAD_ONNX "Automatically download ONNX Runtime prebuilt" ON)
 option(BUILD_FFMPEG "Automatically download/build FFmpeg" ON)
 
 # ============================================================
+# Build Optimization (LTO / IPO)
+# ============================================================
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+if(ipo_supported)
+    message(STATUS "✅ IPO (Link Time Optimization) enabled for Release build")
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+else()
+    message(WARNING "⚠️ IPO (LTO) not supported on this platform: ${ipo_error}")
+endif()
+
+# ============================================================
 # Include & Dependencies
 # ============================================================
 include(ExternalProject)
