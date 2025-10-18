@@ -1,64 +1,56 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -e
 
-echo "🚀 Initializing submodules..."
-git submodule update --init --recursive
+echo "[INFO] Starting Searvids Server bootstrap (Linux/macOS)"
 
-# -----------------------------
-# Check / Install Ninja
-# -----------------------------
-if command -v ninja >/dev/null 2>&1; then
-    echo "✅ Ninja is already installed: $(ninja --version)"
-else
-    echo "⬇️ Ninja not found. Installing..."
+SCRIPT_PATH="$(realpath "$0")"
+RESTART_FLAG=0
+
+check_command() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+install_package() {
+    local pkg="$1"
+    echo "[INFO] Installing missing dependency: $pkg"
+
     if command -v apt >/dev/null 2>&1; then
-        sudo apt update
-        sudo apt install -y ninja-build
+        sudo apt update && sudo apt install -y "$pkg"
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y ninja-build
+        sudo dnf install -y "$pkg"
     elif command -v brew >/dev/null 2>&1; then
-        brew install ninja
+        brew install "$pkg"
     else
-        echo "⚠️ Could not install Ninja automatically. Please install manually."
+        echo "[ERROR] Unknown package manager. Please install $pkg manually."
         exit 1
     fi
-    echo "✅ Ninja installed: $(ninja --version)"
+}
+
+# --- Check and install dependencies ---
+for pkg in git cmake ninja; do
+    if ! check_command "$pkg"; then
+        install_package "$pkg"
+        RESTART_FLAG=1
+    fi
+done
+
+# --- Restart script if new installs occurred ---
+if [ $RESTART_FLAG -eq 1 ]; then
+    echo "[INFO] Some tools were just installed. Restarting bootstrap..."
+    exec "$SCRIPT_PATH"
 fi
 
-# -----------------------------
-# Check / Install system dependencies
-# -----------------------------
-echo "🚀 Checking other system dependencies..."
-if command -v apt >/dev/null 2>&1; then
-    sudo apt install -y git cmake build-essential pkg-config wget unzip nasm yasm
-elif command -v dnf >/dev/null 2>&1; then
-    sudo dnf install -y git cmake make gcc-c++ pkgconfig wget unzip nasm yasm
-elif command -v brew >/dev/null 2>&1; then
-    brew install git cmake nasm wget unzip
-fi
+# --- Proceed with build ---
+echo "[INFO] Updating git submodules..."
+git submodule update --init --recursive
 
-# -----------------------------
-# Create build directory
-# -----------------------------
-echo "🚀 Creating build directory..."
 mkdir -p build
 cd build
 
-# -----------------------------
-# Configure CMake
-# -----------------------------
-echo "🚀 Configuring CMake..."
-cmake .. -DCMAKE_BUILD_TYPE=Release \
-    -DBUILD_WHISPERCPP=ON \
-    -DBUILD_FFMPEG=ON \
-    -DDOWNLOAD_ONNX=ON \
-    -G Ninja
+echo "[INFO] Configuring project with CMake..."
+cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_WHISPERCPP=ON -DBUILD_FFMPEG=ON -DDOWNLOAD_ONNX=ON
 
-# -----------------------------
-# Build
-# -----------------------------
-echo "🚀 Building SearvidsServer..."
-cmake --build .
+echo "[INFO] Building project..."
+cmake --build . --config Release
 
-echo "✅ Build complete. Run server with:"
-echo "./bin/SearvidsServer"
+echo "[SUCCESS] Build complete. Executable available in ./build/bin/"

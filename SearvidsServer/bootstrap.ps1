@@ -1,53 +1,53 @@
-Write-Host "🚀 Initializing submodules..."
+# PowerShell bootstrap script
+$ErrorActionPreference = "Stop"
+
+Write-Host "[INFO] Starting Searvids Server bootstrap (Windows)"
+$ScriptPath = $MyInvocation.MyCommand.Path
+$RestartNeeded = $false
+
+function Test-Command {
+    param([string]$cmd)
+    return (Get-Command $cmd -ErrorAction SilentlyContinue) -ne $null
+}
+
+function Install-PackageIfMissing {
+    param([string]$cmd, [string]$wingetId)
+    if (-not (Test-Command $cmd)) {
+        Write-Host "[INFO] Installing missing dependency: $cmd"
+        try {
+            winget install $wingetId -e --accept-source-agreements --accept-package-agreements
+            $global:RestartNeeded = $true
+        }
+        catch {
+            Write-Host "[ERROR] Failed to install $cmd automatically."
+            exit 1
+        }
+    }
+}
+
+# --- Install dependencies if missing ---
+Install-PackageIfMissing -cmd "git" -wingetId "Git.Git"
+Install-PackageIfMissing -cmd "cmake" -wingetId "Kitware.CMake"
+Install-PackageIfMissing -cmd "ninja" -wingetId "Ninja-build.Ninja"
+
+# --- Restart script if any dependency was installed ---
+if ($RestartNeeded) {
+    Write-Host "[INFO] Dependencies were installed. Restarting bootstrap script..."
+    & powershell -ExecutionPolicy Bypass -File $ScriptPath
+    exit 0
+}
+
+# --- Proceed with build ---
+Write-Host "[INFO] Updating git submodules..."
 git submodule update --init --recursive
 
-# -----------------------------
-# Check / Install Ninja
-# -----------------------------
-try {
-    $ninjaVersion = ninja --version
-    Write-Host "✅ Ninja is already installed: $ninjaVersion"
-} catch {
-    Write-Host "⬇️ Ninja not found. Installing via winget..."
-    winget install --id Ninja-build.Ninja -e
-    $ninjaVersion = ninja --version
-    Write-Host "✅ Ninja installed: $ninjaVersion"
-}
+if (!(Test-Path "build")) { New-Item -ItemType Directory -Path "build" | Out-Null }
+Set-Location build
 
-# -----------------------------
-# Setup vcpkg
-# -----------------------------
-$VcpkgRoot = "$env:USERPROFILE\vcpkg"
-if (-Not (Test-Path $VcpkgRoot)) {
-    Write-Host "⬇️ Installing vcpkg..."
-    git clone https://github.com/microsoft/vcpkg.git $VcpkgRoot
-    & $VcpkgRoot\bootstrap-vcpkg.bat
-}
+Write-Host "[INFO] Configuring project with CMake..."
+cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DBUILD_WHISPERCPP=ON -DBUILD_FFMPEG=ON -DDOWNLOAD_ONNX=ON
 
-Write-Host "🚀 Installing FFmpeg via vcpkg..."
-& $VcpkgRoot\vcpkg install ffmpeg:x64-windows
-
-# -----------------------------
-# Create build directory
-# -----------------------------
-$BuildDir = "build"
-if (-Not (Test-Path $BuildDir)) { New-Item -ItemType Directory -Path $BuildDir }
-Set-Location $BuildDir
-
-# -----------------------------
-# Configure CMake
-# -----------------------------
-Write-Host "🚀 Configuring CMake..."
-cmake .. -DCMAKE_BUILD_TYPE=Release `
-    -DBUILD_WHISPERCPP=ON `
-    -DCMAKE_TOOLCHAIN_FILE="$VcpkgRoot\scripts\buildsystems\vcpkg.cmake" `
-    -DDOWNLOAD_ONNX=ON
-
-# -----------------------------
-# Build
-# -----------------------------
-Write-Host "🚀 Building SearvidsServer..."
+Write-Host "[INFO] Building project..."
 cmake --build . --config Release
 
-Write-Host "✅ Server built at .\bin\SearvidsServer.exe"
-Write-Host "Run with: .\bin\SearvidsServer.exe"
+Write-Host "[SUCCESS] Build complete. Executable in ./build/bin/"
