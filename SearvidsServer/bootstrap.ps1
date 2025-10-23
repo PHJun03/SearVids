@@ -46,7 +46,18 @@ Install-PackageIfMissing -cmd "git" -wingetId "Git.Git"
 Install-PackageIfMissing -cmd "cmake" -wingetId "Kitware.CMake"
 Install-PackageIfMissing -cmd "ninja" -wingetId "Ninja-build.Ninja"
 
-# --- ASIO for Crow ---
+# --- vcpkg + ASIO ---
+if (-not $env:VCPKG_ROOT) {
+    $VcpkgRoot = Join-Path $env:USERPROFILE "vcpkg"
+    Write-Host "[INFO] VCPKG_ROOT not set. Installing vcpkg at $VcpkgRoot..."
+    git clone https://github.com/microsoft/vcpkg.git $VcpkgRoot
+    Set-Location $VcpkgRoot
+    .\bootstrap-vcpkg.bat
+    $env:VCPKG_ROOT = $VcpkgRoot
+    $global:RestartNeeded = $true
+}
+
+# --- Install ASIO if missing ---
 $ASIOPaths = @(
     "$env:VCPKG_ROOT\installed\x64-windows\include\asio",
     "$env:ProgramFiles\asio"
