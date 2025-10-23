@@ -4,7 +4,10 @@ set -e
 echo "[INFO] Starting Searvids Server bootstrap (Linux/macOS)"
 
 SCRIPT_PATH="$(realpath "$0")"
+PROJECT_ROOT="$(dirname "$SCRIPT_PATH")"
 RESTART_FLAG=0
+
+cd "$PROJECT_ROOT"  # 프로젝트 루트 기준으로 작업
 
 # --- Parse arguments ---
 CLEAN=0
@@ -121,6 +124,9 @@ echo "[INFO] Configuring project with CMake..."
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_WHISPERCPP=ON -DBUILD_FFMPEG=ON -DDOWNLOAD_ONNX=ON
 
 echo "[INFO] Building project..."
-cmake --build . --config Release --parallel
-
-echo "[SUCCESS] Build complete. Executable available in ./build/bin/"
+if cmake --build . --config Release --parallel; then
+    echo "[SUCCESS] Build complete. Executable available in ./build/bin/"
+else
+    echo "[ERROR] Build failed!"
+    exit 1
+fi

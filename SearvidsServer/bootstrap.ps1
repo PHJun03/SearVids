@@ -8,12 +8,14 @@ $ErrorActionPreference = "Stop"
 try {
     Write-Host "[INFO] Starting Searvids Server bootstrap (Windows)"
     $ScriptPath = $MyInvocation.MyCommand.Path
+    $ProjectRoot = Split-Path -Parent $ScriptPath
+    Set-Location $ProjectRoot
     $RestartNeeded = $false
 
     # --- Clean build directories if requested ---
     if ($Clean -or $Rebuild) {
         Write-Host "[INFO] Performing clean build..."
-        if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+        if (Test-Path "$ProjectRoot\build") { Remove-Item -Recurse -Force "$ProjectRoot\build" }
         Write-Host "[INFO] Clean complete."
         if ($Clean) {
             Write-Host "[INFO] Clean-only mode complete. Exiting."
@@ -68,8 +70,13 @@ try {
     }
     if (-not $ASIOFound) {
         Write-Host "[INFO] Installing ASIO via vcpkg..."
-        & "$env:VCPKG_ROOT\vcpkg.exe" install asio:x64-windows
-        $global:RestartNeeded = $true
+        try {
+            & "$env:VCPKG_ROOT\vcpkg.exe" install asio:x64-windows
+            $global:RestartNeeded = $true
+        } catch {
+            Write-Host "[ERROR] ASIO installation failed. Make sure Visual Studio with C++ build tools is installed."
+            exit 1
+        }
     }
 
     # --- Restart script if any dependency was installed ---
@@ -84,16 +91,20 @@ try {
     git submodule sync
     git submodule update --init --recursive
 
-    if (!(Test-Path "build")) { New-Item -ItemType Directory -Path "build" | Out-Null }
-    Set-Location build
+    if (!(Test-Path "$ProjectRoot\build")) { New-Item -ItemType Directory -Path "$ProjectRoot\build" | Out-Null }
+    Set-Location "$ProjectRoot\build"
 
     Write-Host "[INFO] Configuring project with CMake..."
     cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DBUILD_WHISPERCPP=ON -DBUILD_FFMPEG=ON -DDOWNLOAD_ONNX=ON
 
     Write-Host "[INFO] Building project..."
-    cmake --build . --config Release --parallel
-
-    Write-Host "[SUCCESS] Build complete. Executable in ./build/bin/"
+    try {
+        cmake --build . --config Release --parallel
+        Write-Host "[SUCCESS] Build complete. Executable in ./build/bin/"
+    } catch {
+        Write-Host "[ERROR] Build failed!"
+        exit 1
+    }
 
 } catch [System.Management.Automation.PSSecurityException] {
     Write-Host "[ERROR] PowerShell script execution is blocked by policy."
