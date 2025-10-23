@@ -11,8 +11,10 @@ CLEAN=0
 REBUILD=0
 for arg in "$@"; do
     case "$arg" in
-        --clean) CLEAN=1 ;;
-        --rebuild) REBUILD=1 ;;
+        --clean)
+            CLEAN=1 ;;
+        --rebuild)
+            REBUILD=1 ;;
     esac
 done
 
@@ -47,8 +49,9 @@ install_package() {
     fi
 }
 
-# --- Check and install dependencies ---
-for pkg in git cmake ninja; do
+# --- Dependencies to check/install ---
+DEPS=(git cmake ninja)
+for pkg in "${DEPS[@]}"; do
     if ! check_command "$pkg"; then
         install_package "$pkg"
         RESTART_FLAG=1
@@ -56,7 +59,23 @@ for pkg in git cmake ninja; do
     echo "[INFO] Dependency '$pkg' is installed: $($pkg --version | head -n 1)"
 done
 
-# --- Restart script if new installs occurred ---
+# --- ASIO (Crow dependency) ---
+if [ ! -d "/usr/include/asio" ] && [ ! -d "/usr/local/include/asio" ]; then
+    echo "[INFO] Installing ASIO library..."
+    if command -v apt >/dev/null 2>&1; then
+        sudo apt install -y libasio-dev
+    elif command -v dnf >/dev/null 2>&1; then
+        sudo dnf install -y asio-devel
+    elif command -v brew >/dev/null 2>&1; then
+        brew install asio
+    else
+        echo "[ERROR] Could not install ASIO automatically. Please install manually."
+        exit 1
+    fi
+    RESTART_FLAG=1
+fi
+
+# --- Restart script if any new installs occurred ---
 if [ $RESTART_FLAG -eq 1 ]; then
     echo "[INFO] Some tools were just installed. Refreshing shell PATH..."
     hash -r
@@ -66,6 +85,7 @@ fi
 
 # --- Proceed with build ---
 echo "[INFO] Updating git submodules..."
+git submodule sync
 git submodule update --init --recursive
 
 mkdir -p build

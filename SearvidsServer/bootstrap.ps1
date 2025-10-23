@@ -22,35 +22,44 @@ if ($Clean -or $Rebuild) {
 
 function Test-Command {
     param([string]$cmd)
-    return (Get-Command $cmd -ErrorAction SilentlyContinue) -ne $null
+    return ($null -ne (Get-Command $cmd -ErrorAction SilentlyContinue))
 }
 
 function Install-PackageIfMissing {
     param([string]$cmd, [string]$wingetId)
-
     if (-not (Test-Command $cmd)) {
         Write-Host "[INFO] Installing missing dependency: $cmd"
         try {
-            winget install $wingetId -e --accept-source-agreements --accept-package-agreements 2>$null
-        } catch {
-            Write-Host "[WARN] winget returned an error, continuing..."
+            winget install $wingetId -e --accept-source-agreements --accept-package-agreements
+            $global:RestartNeeded = $true
+            Write-Host "[INFO] Successfully installed $cmd\: $(( & $cmd --version | Select-Object -First 1 ))"
         }
-        if (-not (Test-Command $cmd)) {
-            Write-Host "[ERROR] $cmd still not found after installation attempt."
+        catch {
+            Write-Host "[ERROR] Failed to install $cmd automatically."
             exit 1
-        } else {
-            Write-Host "[INFO] Successfully installed or already present: $cmd ($(( & $cmd --version | Select-Object -First 1 )))"
         }
-        $global:RestartNeeded = $true
-    } else {
-        Write-Host "[INFO] Dependency '$cmd' is installed: $(( & $cmd --version | Select-Object -First 1 ))"
     }
 }
 
-# --- Install dependencies if missing ---
+# --- Dependencies to check/install ---
 Install-PackageIfMissing -cmd "git" -wingetId "Git.Git"
 Install-PackageIfMissing -cmd "cmake" -wingetId "Kitware.CMake"
 Install-PackageIfMissing -cmd "ninja" -wingetId "Ninja-build.Ninja"
+
+# --- ASIO for Crow ---
+$ASIOPaths = @(
+    "$env:VCPKG_ROOT\installed\x64-windows\include\asio",
+    "$env:ProgramFiles\asio"
+)
+$ASIOFound = $false
+foreach ($path in $ASIOPaths) {
+    if (Test-Path $path) { $ASIOFound = $true; break }
+}
+if (-not $ASIOFound) {
+    Write-Host "[INFO] Installing ASIO via vcpkg..."
+    & "$env:VCPKG_ROOT\vcpkg.exe" install asio:x64-windows
+    $global:RestartNeeded = $true
+}
 
 # --- Restart script if any dependency was installed ---
 if ($RestartNeeded) {
@@ -61,6 +70,7 @@ if ($RestartNeeded) {
 
 # --- Proceed with build ---
 Write-Host "[INFO] Updating git submodules..."
+git submodule sync
 git submodule update --init --recursive
 
 if (!(Test-Path "build")) { New-Item -ItemType Directory -Path "build" | Out-Null }
