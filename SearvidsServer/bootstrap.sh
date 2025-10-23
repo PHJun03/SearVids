@@ -32,11 +32,14 @@ for pkg in git cmake ninja; do
         install_package "$pkg"
         RESTART_FLAG=1
     fi
+    echo "[INFO] Dependency '$pkg' is installed: $($pkg --version | head -n 1)"
 done
 
 # --- Restart script if new installs occurred ---
 if [ $RESTART_FLAG -eq 1 ]; then
-    echo "[INFO] Some tools were just installed. Restarting bootstrap..."
+    echo "[INFO] Some tools were just installed. Refreshing shell PATH..."
+    hash -r
+    echo "[INFO] Restarting bootstrap..."
     exec "$SCRIPT_PATH"
 fi
 
@@ -51,6 +54,6 @@ echo "[INFO] Configuring project with CMake..."
 cmake .. -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_WHISPERCPP=ON -DBUILD_FFMPEG=ON -DDOWNLOAD_ONNX=ON
 
 echo "[INFO] Building project..."
-cmake --build . --config Release
+cmake --build . --config Release --parallel
 
 echo "[SUCCESS] Build complete. Executable available in ./build/bin/"

@@ -17,6 +17,7 @@ function Install-PackageIfMissing {
         try {
             winget install $wingetId -e --accept-source-agreements --accept-package-agreements
             $global:RestartNeeded = $true
+            Write-Host "[INFO] Successfully installed $cmd: $(( & $cmd --version | Select-Object -First 1 ))"
         }
         catch {
             Write-Host "[ERROR] Failed to install $cmd automatically."
@@ -32,8 +33,8 @@ Install-PackageIfMissing -cmd "ninja" -wingetId "Ninja-build.Ninja"
 
 # --- Restart script if any dependency was installed ---
 if ($RestartNeeded) {
-    Write-Host "[INFO] Dependencies were installed. Restarting bootstrap script..."
-    & powershell -ExecutionPolicy Bypass -File $ScriptPath
+    Write-Host "[INFO] Some tools were just installed. Restarting bootstrap script..."
+    Start-Process -FilePath "powershell" -ArgumentList "-ExecutionPolicy Bypass -File `"$ScriptPath`"" -Wait
     exit 0
 }
 
@@ -48,6 +49,6 @@ Write-Host "[INFO] Configuring project with CMake..."
 cmake .. -G "Ninja" -DCMAKE_BUILD_TYPE=Release -DBUILD_WHISPERCPP=ON -DBUILD_FFMPEG=ON -DDOWNLOAD_ONNX=ON
 
 Write-Host "[INFO] Building project..."
-cmake --build . --config Release
+cmake --build . --config Release --parallel
 
 Write-Host "[SUCCESS] Build complete. Executable in ./build/bin/"
