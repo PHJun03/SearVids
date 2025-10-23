@@ -1,4 +1,3 @@
-# PowerShell bootstrap script
 param(
     [switch]$Clean,
     [switch]$Rebuild
@@ -28,17 +27,23 @@ function Test-Command {
 
 function Install-PackageIfMissing {
     param([string]$cmd, [string]$wingetId)
+
     if (-not (Test-Command $cmd)) {
         Write-Host "[INFO] Installing missing dependency: $cmd"
         try {
-            winget install $wingetId -e --accept-source-agreements --accept-package-agreements
-            $global:RestartNeeded = $true
-            Write-Host "[INFO] Successfully installed $cmd: $(( & $cmd --version | Select-Object -First 1 ))"
+            winget install $wingetId -e --accept-source-agreements --accept-package-agreements 2>$null
+        } catch {
+            Write-Host "[WARN] winget returned an error, continuing..."
         }
-        catch {
-            Write-Host "[ERROR] Failed to install $cmd automatically."
+        if (-not (Test-Command $cmd)) {
+            Write-Host "[ERROR] $cmd still not found after installation attempt."
             exit 1
+        } else {
+            Write-Host "[INFO] Successfully installed or already present: $cmd ($(( & $cmd --version | Select-Object -First 1 )))"
         }
+        $global:RestartNeeded = $true
+    } else {
+        Write-Host "[INFO] Dependency '$cmd' is installed: $(( & $cmd --version | Select-Object -First 1 ))"
     }
 }
 

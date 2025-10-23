@@ -11,10 +11,8 @@ CLEAN=0
 REBUILD=0
 for arg in "$@"; do
     case "$arg" in
-        --clean)
-            CLEAN=1 ;;
-        --rebuild)
-            REBUILD=1 ;;
+        --clean) CLEAN=1 ;;
+        --rebuild) REBUILD=1 ;;
     esac
 done
 
