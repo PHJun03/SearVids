@@ -38,11 +38,20 @@ install_package() {
     echo "[INFO] Installing missing dependency: $pkg"
 
     if command -v apt >/dev/null 2>&1; then
-        sudo apt update && sudo apt install -y "$pkg"
+        sudo apt update && sudo apt install -y "$pkg" || {
+            echo "[ERROR] Failed to install $pkg. Please run this script with sudo or install manually."
+            exit 1
+        }
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y "$pkg"
+        sudo dnf install -y "$pkg" || {
+            echo "[ERROR] Failed to install $pkg. Please run this script with sudo or install manually."
+            exit 1
+        }
     elif command -v brew >/dev/null 2>&1; then
-        brew install "$pkg"
+        brew install "$pkg" || {
+            echo "[ERROR] Failed to install $pkg. Please install manually via Homebrew."
+            exit 1
+        }
     else
         echo "[ERROR] Unknown package manager. Please install $pkg manually."
         exit 1
@@ -60,22 +69,39 @@ for pkg in "${DEPS[@]}"; do
 done
 
 # --- ASIO (Crow dependency) ---
-if [ ! -d "/usr/include/asio" ] && [ ! -d "/usr/local/include/asio" ]; then
-    echo "[INFO] Installing ASIO library..."
+ASIO_FOUND=0
+for dir in "/usr/include/asio" "/usr/local/include/asio"; do
+    if [ -d "$dir" ]; then
+        ASIO_FOUND=1
+        break
+    fi
+done
+
+if [ $ASIO_FOUND -eq 0 ]; then
+    echo "[INFO] ASIO library not found. Installing..."
     if command -v apt >/dev/null 2>&1; then
-        sudo apt install -y libasio-dev
+        sudo apt install -y libasio-dev || {
+            echo "[ERROR] Could not install ASIO. Please install manually: sudo apt install libasio-dev"
+            exit 1
+        }
     elif command -v dnf >/dev/null 2>&1; then
-        sudo dnf install -y asio-devel
+        sudo dnf install -y asio-devel || {
+            echo "[ERROR] Could not install ASIO. Please install manually: sudo dnf install asio-devel"
+            exit 1
+        }
     elif command -v brew >/dev/null 2>&1; then
-        brew install asio
+        brew install asio || {
+            echo "[ERROR] Could not install ASIO. Please install manually via brew."
+            exit 1
+        }
     else
-        echo "[ERROR] Could not install ASIO automatically. Please install manually."
+        echo "[ERROR] Could not detect package manager. Please install ASIO manually."
         exit 1
     fi
     RESTART_FLAG=1
 fi
 
-# --- Restart script if any new installs occurred ---
+# --- Restart script if new installs occurred ---
 if [ $RESTART_FLAG -eq 1 ]; then
     echo "[INFO] Some tools were just installed. Refreshing shell PATH..."
     hash -r
