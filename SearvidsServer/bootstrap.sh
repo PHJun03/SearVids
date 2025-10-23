@@ -105,7 +105,7 @@ fi
 if [ $RESTART_FLAG -eq 1 ]; then
     echo "[INFO] Some tools were just installed. Refreshing shell PATH..."
     hash -r
-    echo "[INFO] Restarting bootstrap..."
+    echo "[INFO] Restarting bootstrap...(But Restarting computer recommended)"
     exec "$SCRIPT_PATH" "$@"
 fi
 

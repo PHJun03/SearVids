@@ -74,7 +74,7 @@ try {
 
     # --- Restart script if any dependency was installed ---
     if ($RestartNeeded) {
-        Write-Host "[INFO] Some tools were just installed. Restarting bootstrap script..."
+        Write-Host "[INFO] Some tools were just installed. Restarting bootstrap script...(But Restarting computer recommended)"
         Start-Process -FilePath "powershell" -ArgumentList "-ExecutionPolicy Bypass -File `"$ScriptPath`"" -Wait
         exit 0
     }
