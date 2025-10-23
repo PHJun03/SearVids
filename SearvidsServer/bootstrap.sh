@@ -6,6 +6,29 @@ echo "[INFO] Starting Searvids Server bootstrap (Linux/macOS)"
 SCRIPT_PATH="$(realpath "$0")"
 RESTART_FLAG=0
 
+# --- Parse arguments ---
+CLEAN=0
+REBUILD=0
+for arg in "$@"; do
+    case "$arg" in
+        --clean)
+            CLEAN=1 ;;
+        --rebuild)
+            REBUILD=1 ;;
+    esac
+done
+
+# --- Clean build directories if requested ---
+if [ $CLEAN -eq 1 ] || [ $REBUILD -eq 1 ]; then
+    echo "[INFO] Performing clean build..."
+    rm -rf build
+    echo "[INFO] Clean complete."
+    if [ $CLEAN -eq 1 ]; then
+        echo "[INFO] Clean-only mode complete. Exiting."
+        exit 0
+    fi
+fi
+
 check_command() {
     command -v "$1" >/dev/null 2>&1
 }
@@ -40,7 +63,7 @@ if [ $RESTART_FLAG -eq 1 ]; then
     echo "[INFO] Some tools were just installed. Refreshing shell PATH..."
     hash -r
     echo "[INFO] Restarting bootstrap..."
-    exec "$SCRIPT_PATH"
+    exec "$SCRIPT_PATH" "$@"
 fi
 
 # --- Proceed with build ---

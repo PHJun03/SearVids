@@ -1,9 +1,25 @@
 # PowerShell bootstrap script
+param(
+    [switch]$Clean,
+    [switch]$Rebuild
+)
+
 $ErrorActionPreference = "Stop"
 
 Write-Host "[INFO] Starting Searvids Server bootstrap (Windows)"
 $ScriptPath = $MyInvocation.MyCommand.Path
 $RestartNeeded = $false
+
+# --- Clean build directories if requested ---
+if ($Clean -or $Rebuild) {
+    Write-Host "[INFO] Performing clean build..."
+    if (Test-Path "build") { Remove-Item -Recurse -Force "build" }
+    Write-Host "[INFO] Clean complete."
+    if ($Clean) {
+        Write-Host "[INFO] Clean-only mode complete. Exiting."
+        exit 0
+    }
+}
 
 function Test-Command {
     param([string]$cmd)
