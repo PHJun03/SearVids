@@ -1,0 +1,3 @@
+[submodule "SearvidsServer/third_party/whisper.cpp"]
+	path = SearvidsServer/third_party/whisper.cpp
+	url = https://github.com/ggerganov/whisper.cpp.git
