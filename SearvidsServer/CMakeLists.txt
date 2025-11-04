@@ -49,9 +49,14 @@ if(WIN32)
     if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
         set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
     endif()
+
     find_package(FFMPEG REQUIRED COMPONENTS AVCODEC AVFORMAT AVUTIL SWSCALE SWRESAMPLE)
-    include_directories(${FFMPEG_INCLUDE_DIRS})
+    
+    target_include_directories(SearvidsServer PRIVATE ${FFMPEG_INCLUDE_DIRS})
+    target_link_libraries(SearvidsServer PRIVATE ${FFMPEG_LIBRARIES})
+    
     message(STATUS "🔍 FFmpeg (vcpkg) configured")
+    
 else()
     set(FFMPEG_DIR "${CMAKE_BINARY_DIR}/ffmpeg")
     if(BUILD_FFMPEG)
