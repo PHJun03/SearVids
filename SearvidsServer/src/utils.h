@@ -28,6 +28,7 @@ namespace utils {
         void error(const std::string& msg);
 
         void setLogFile(const std::string& filepath);
+        void closeLogFile();
         void enableConsole(bool enable);
         std::string getTimestamp();
 

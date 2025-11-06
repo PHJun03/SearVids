@@ -44,11 +44,15 @@ void Logger::log(LogLevel level, const std::string& msg) {
     std::ostringstream formatted;
     formatted << "[" << getTimestamp() << "] [" << levelToString(level) << "] " << msg << "\n";
 
+    // Write to console
     if (consoleEnabled)
         std::cout << formatted.str();
 
-    if (logfile.is_open())
+    // Write to file (if open)
+    if (logfile.is_open()) {
         logfile << formatted.str();
+        logfile.flush();  // ✅ ensure written to disk immediately
+    }
 }
 
 void Logger::info(const std::string& msg) { log(LogLevel::INFO, msg); }
@@ -57,7 +61,7 @@ void Logger::error(const std::string& msg) { log(LogLevel::ERROR, msg); }
 
 void Logger::setLogFile(const std::string& filepath) {
     std::lock_guard<std::mutex> lock(logMutex);
-    if (logfile.is_open()) logfile.close();
+    if (logfile.is_open()) logfile.close();  // ✅ close previous file
     logfile.open(filepath, std::ios::app);
     if (!logfile)
         std::cerr << "[Logger] Failed to open log file: " << filepath << std::endl;
@@ -65,6 +69,15 @@ void Logger::setLogFile(const std::string& filepath) {
 
 void Logger::enableConsole(bool enable) {
     consoleEnabled = enable;
+}
+
+// Explicitly close the file (for tests and clean shutdown)
+void Logger::closeLogFile() {
+    std::lock_guard<std::mutex> lock(logMutex);
+    if (logfile.is_open()) {
+        logfile.flush();
+        logfile.close();
+    }
 }
 
 // ==============================

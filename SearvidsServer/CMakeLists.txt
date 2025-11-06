@@ -1,3 +1,4 @@
+# #[[
 cmake_minimum_required(VERSION 3.16)
 project(SearvidsServer CXX)
 
@@ -170,6 +171,8 @@ set(SOURCES
 
 add_executable(SearvidsServer ${SOURCES})
 
+add_subdirectory(tests)
+
 # ============================================================
 # Linking
 # ============================================================
@@ -181,3 +184,34 @@ endif()
 
 set_target_properties(SearvidsServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 message(STATUS "✅ Searvids Server configuration complete")
+# ]]
+
+#[[
+# ============================================================
+# CMakeLists for test
+# ============================================================
+cmake_minimum_required(VERSION 3.15)
+project(SearvidsServer LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_BUILD_TYPE Release)
+
+# ========== vcpkg ==========
+if(WIN32)
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+        set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
+    endif()
+endif()
+
+# ========== Add src ==========
+add_library(utils STATIC
+    src/utils.cpp
+    src/utils.h
+)
+target_include_directories(utils PUBLIC src)
+
+# ========== Add tests ==========
+enable_testing()
+add_subdirectory(tests)
+]]
