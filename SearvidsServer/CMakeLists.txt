@@ -1,4 +1,4 @@
-# #[[
+#[[
 cmake_minimum_required(VERSION 3.16)
 project(SearvidsServer CXX)
 
@@ -184,11 +184,11 @@ endif()
 
 set_target_properties(SearvidsServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 message(STATUS "✅ Searvids Server configuration complete")
-# ]]
+]]
 
-#[[
+# #[[
 # ============================================================
-# CMakeLists for test
+# CMakeLists for Tests
 # ============================================================
 cmake_minimum_required(VERSION 3.15)
 project(SearvidsServer LANGUAGES CXX)
@@ -204,14 +204,21 @@ if(WIN32)
     endif()
 endif()
 
-# ========== Add src ==========
+# ========== Add src/utils ==========
 add_library(utils STATIC
     src/utils.cpp
     src/utils.h
 )
 target_include_directories(utils PUBLIC src)
 
+# ========== Add src/whisper_wrapper ==========
+add_library(whisper_wrapper STATIC
+    src/whisper_wrapper.cpp
+    src/whisper_wrapper.h
+)
+target_include_directories(whisper_wrapper PUBLIC src)
+
 # ========== Add tests ==========
 enable_testing()
 add_subdirectory(tests)
-]]
+# ]]

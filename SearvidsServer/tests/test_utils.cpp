@@ -1,12 +1,12 @@
 #include <gtest/gtest.h>
-#include "utils.h"
+#include "../src/utils.h"
 #include <fstream>
 #include <filesystem>
 
 namespace fs = std::filesystem;
 
 // ------------------------------
-// Test: String utilities
+// String utilities
 // ------------------------------
 TEST(UtilsTest, ToLowerWorks) {
     EXPECT_EQ(utils::toLower("HELLO"), "hello");
@@ -21,7 +21,7 @@ TEST(UtilsTest, TrimWorks) {
 }
 
 // ------------------------------
-// Test: Filesystem utilities
+// Filesystem utilities
 // ------------------------------
 TEST(UtilsTest, EnsureDirCreatesDirectory) {
     std::string testDir = "test_temp_dir";
@@ -52,7 +52,7 @@ TEST(UtilsTest, GetFileNameExtractsCorrectly) {
 }
 
 // ------------------------------
-// Test: Time & Stopwatch
+// Time & Stopwatch
 // ------------------------------
 TEST(UtilsTest, StopwatchMeasuresTime) {
     utils::Stopwatch sw;
@@ -62,7 +62,7 @@ TEST(UtilsTest, StopwatchMeasuresTime) {
 }
 
 // ------------------------------
-// Test: Logger (basic checks)
+// Logger (basic checks)
 // ------------------------------
 TEST(UtilsTest, LoggerWritesToFile) {
     utils::Logger& logger = utils::Logger::instance();
@@ -90,7 +90,7 @@ TEST(UtilsTest, LoggerWritesToFile) {
 }
 
 // ------------------------------
-// Test: tryCatchLog (exception handling)
+// tryCatchLog (exception handling)
 // ------------------------------
 TEST(UtilsTest, TryCatchLogsException) {
     utils::Logger& logger = utils::Logger::instance();
