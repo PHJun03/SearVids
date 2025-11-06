@@ -204,19 +204,33 @@ if(WIN32)
     endif()
 endif()
 
+include_directories(${PROJECT_SOURCE_DIR}/src)
 # ========== Add src/utils ==========
 add_library(utils STATIC
     src/utils.cpp
     src/utils.h
 )
-target_include_directories(utils PUBLIC src)
+
+# ========== Add src/ffmpeg_decoder ==========
+find_package(FFMPEG REQUIRED COMPONENTS AVCODEC AVFORMAT AVUTIL AVDEVICE SWSCALE SWRESAMPLE)
+
+add_library(ffmpeg_decoder STATIC
+    src/ffmpeg_decoder.cpp
+    src/ffmpeg_decoder.h
+)
+
+target_include_directories(ffmpeg_decoder PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+    ${PROJECT_SOURCE_DIR}/src
+)
+
+target_link_libraries(ffmpeg_decoder PRIVATE ${FFMPEG_LIBRARIES})
 
 # ========== Add src/whisper_wrapper ==========
 add_library(whisper_wrapper STATIC
     src/whisper_wrapper.cpp
     src/whisper_wrapper.h
 )
-target_include_directories(whisper_wrapper PUBLIC src)
 
 # ========== Add tests ==========
 enable_testing()

@@ -30,6 +30,6 @@ VideoInfo probe(const std::string& path);
 int count_frames(const std::string& path);
 
 // Utility: convert duration (AV) to ms (used internally)
-inline int64_t avtime_to_ms(int64_t avtime, int64_t time_base_num, int64_t time_base_den);
+int64_t avtime_to_ms(int64_t avtime, int64_t time_base_num, int64_t time_base_den);
 
 } // namespace ffmpeg_decoder

@@ -7,7 +7,7 @@ cmake_minimum_required(VERSION 3.16)
 # Create main test target
 add_executable(SearvidsTests
     test_utils.cpp
-    # test_ffmpeg_decoder.cpp
+    test_ffmpeg_decoder.cpp
     test_whisper_wrapper.cpp
     # test_clip_onnx.cpp
     # test_hnsw_index.cpp
@@ -33,7 +33,7 @@ target_include_directories(SearvidsTests
 target_link_libraries(SearvidsTests
     PRIVATE
         utils
-        # ffmpeg_decoder
+        ffmpeg_decoder
         whisper_wrapper
         # clip_onnx
         # hnsw_index
