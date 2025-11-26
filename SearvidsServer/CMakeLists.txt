@@ -76,6 +76,31 @@ add_library(downloader STATIC
 target_link_libraries(downloader PRIVATE CURL::libcurl)
 
 
+# ========== Add Server API ==========
+# Crow(HTTP Framework)
+find_package(Crow REQUIRED)
+
+# nlohmann_json
+find_package(nlohmann_json 3.2.0 REQUIRED)
+
+add_library(server_api STATIC
+    src/server_api.cpp
+    src/server_api.h
+)
+
+target_include_directories(server_api PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
+target_link_libraries(server_api PRIVATE
+    Crow::Crow
+    hnsw_index
+    downloader
+    ffmpeg_decoder
+    clip_onnx
+    whisper_wrapper
+    nlohmann_json::nlohmann_json
+)
+
+
 # ========== Tests ==========
 enable_testing()
 add_subdirectory(tests)

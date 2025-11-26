@@ -10,9 +10,11 @@ add_executable(SearvidsTests
     test_ffmpeg_decoder.cpp
     test_whisper_wrapper.cpp
     test_clip_onnx.cpp
+
+    # Do not add under tests at the same time to avoid main function redefinition error
     # test_hnsw_index.cpp
-    test_downloader.cpp # Do not add both hnsw_index and downloader tests at the same time
-    # test_server_api.cpp
+    # test_downloader.cpp
+    test_server_api.cpp
 )
 
 # Link GTest
@@ -38,7 +40,7 @@ target_link_libraries(SearvidsTests
         clip_onnx
         hnsw_index
         downloader
-        # server_api
+        server_api
 )
 
 # Enable test discovery
