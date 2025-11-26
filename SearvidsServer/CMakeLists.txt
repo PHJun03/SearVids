@@ -65,6 +65,17 @@ target_include_directories(hnswlib INTERFACE ${CMAKE_SOURCE_DIR}/third_party/hns
 
 target_link_libraries(hnsw_index PRIVATE hnswlib)
 
+
+# ========== Add Downloader ==========
+find_package(CURL REQUIRED)
+
+add_library(downloader STATIC
+    src/downloader.cpp
+    src/downloader.h
+)
+target_link_libraries(downloader PRIVATE CURL::libcurl)
+
+
 # ========== Tests ==========
 enable_testing()
 add_subdirectory(tests)

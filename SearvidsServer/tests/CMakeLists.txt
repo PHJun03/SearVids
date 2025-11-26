@@ -10,8 +10,8 @@ add_executable(SearvidsTests
     test_ffmpeg_decoder.cpp
     test_whisper_wrapper.cpp
     test_clip_onnx.cpp
-    test_hnsw_index.cpp
-    # test_downloader.cpp
+    # test_hnsw_index.cpp
+    test_downloader.cpp # Do not add both hnsw_index and downloader tests at the same time
     # test_server_api.cpp
 )
 
@@ -37,7 +37,7 @@ target_link_libraries(SearvidsTests
         whisper_wrapper
         clip_onnx
         hnsw_index
-        # downloader
+        downloader
         # server_api
 )
 
