@@ -15,8 +15,8 @@ namespace utils {
     enum class LogLevel {
         INFO,
         WARN,
-        ERROR
-    };
+        ERR
+    };  
 
     class Logger {
     public:

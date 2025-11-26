@@ -1,5 +1,5 @@
 #include "hnsw_index.h"
-#include <hnswlib/hnswlib.h>
+#include <hnswlib.h>
 #include <mutex>
 #include <stdexcept>
 #include <vector>

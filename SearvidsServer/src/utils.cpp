@@ -33,7 +33,7 @@ std::string Logger::levelToString(LogLevel level) {
     switch (level) {
         case LogLevel::INFO: return "INFO";
         case LogLevel::WARN: return "WARN";
-        case LogLevel::ERROR: return "ERROR";
+        case LogLevel::ERR: return "ERROR";
         default: return "UNKNOWN";
     }
 }
@@ -57,7 +57,7 @@ void Logger::log(LogLevel level, const std::string& msg) {
 
 void Logger::info(const std::string& msg) { log(LogLevel::INFO, msg); }
 void Logger::warn(const std::string& msg) { log(LogLevel::WARN, msg); }
-void Logger::error(const std::string& msg) { log(LogLevel::ERROR, msg); }
+void Logger::error(const std::string& msg) { log(LogLevel::ERR, msg); }
 
 void Logger::setLogFile(const std::string& filepath) {
     std::lock_guard<std::mutex> lock(logMutex);

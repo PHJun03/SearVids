@@ -8,6 +8,7 @@
                 "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp/include",
                 "${workspaceFolder}/SearvidsServer/third_party/onnxruntime/include",
                 "${workspaceFolder}/SearvidsServer/third_party/hnswlib",
+                "${workspaceFolder}/SearvidsServer/third_party/hnswlib/hnswlib",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include/crow",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include/nlohmann"

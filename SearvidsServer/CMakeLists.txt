@@ -8,14 +8,16 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release)
 
-include_directories(${PROJECT_SOURCE_DIR}/src)
 
-# ========== Vcpkg ==========
-if(WIN32)
-    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-        set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
-    endif()
-endif()
+# ========== Main Executable ==========
+set(SOURCES
+    src/server_main.cpp
+)
+
+add_executable(SearvidsServer ${SOURCES})
+
+target_include_directories(SearvidsServer PRIVATE ${PROJECT_SOURCE_DIR}/src)
+
 
 # ========== Add Utils ==========
 add_library(utils STATIC
@@ -53,15 +55,19 @@ include_directories(${ONNXRUNTIME_INCLUDE_DIR})
 set(ONNXRUNTIME_LIB_DIR "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/lib")
 target_link_libraries(clip_onnx PRIVATE ${ONNXRUNTIME_LIB_DIR}/onnxruntime.lib)
 
+
 # ========== Add Hnsw ==========
+# create an INTERFACE target for header-only hnswlib
+add_library(hnswlib INTERFACE)
+target_include_directories(hnswlib INTERFACE 
+    ${CMAKE_SOURCE_DIR}/third_party/hnswlib
+    ${CMAKE_SOURCE_DIR}/third_party/hnswlib/hnswlib
+)
+
 add_library(hnsw_index STATIC
     src/hnsw_index.cpp
     src/hnsw_index.h
 )
-
-# create an INTERFACE target for header-only hnswlib
-add_library(hnswlib INTERFACE)
-target_include_directories(hnswlib INTERFACE ${CMAKE_SOURCE_DIR}/third_party/hnswlib)
 
 target_link_libraries(hnsw_index PRIVATE hnswlib)
 
@@ -101,21 +107,26 @@ target_link_libraries(server_api PRIVATE
 )
 
 
+# ========== Main Linking ==========
+target_link_libraries(SearvidsServer PRIVATE
+    utils
+    ffmpeg_decoder
+    whisper_wrapper
+    clip_onnx
+    hnsw_index
+    downloader
+    server_api
+    Crow::Crow
+    nlohmann_json::nlohmann_json
+)
+
+
 # ========== Tests ==========
 enable_testing()
 add_subdirectory(tests)
 
 
-
 #[[
-cmake_minimum_required(VERSION 3.16)
-project(SearvidsServer CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-message(STATUS "🚀 Configuring Searvids Server (Crow HTTP Server)")
-
 # ============================================================
 # Options
 # ============================================================
