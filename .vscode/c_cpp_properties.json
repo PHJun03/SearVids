@@ -7,6 +7,7 @@
                 "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp",
                 "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp/include",
                 "${workspaceFolder}/SearvidsServer/third_party/onnxruntime/include",
+                "${workspaceFolder}/SearvidsServer/third_party/hnswlib",
                 "C:/Users/phjun/vcpkg/installed/x64-windows/include"
             ],
             "defines": [

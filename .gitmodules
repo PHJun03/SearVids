@@ -1,0 +1,7 @@
+[submodule "SearvidsServer/third_party/whisper.cpp"]
+    path = SearvidsServer/third_party/whisper.cpp
+    url = https://github.com/ggerganov/whisper.cpp.git
+
+[submodule "SearvidsServer/third_party/hnswlib"]
+    path = SearvidsServer/third_party/hnswlib
+    url = https://github.com/nmslib/hnswlib.git
