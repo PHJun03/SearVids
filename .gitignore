@@ -1,0 +1,6 @@
+# Ignore some ONNX model files beacause they are large binary files
+*.onnx
+*.onnx.data
+SearvidsServer/third_party/onnxruntime/lib/onnxruntime.pdb
+SearvidsServer/third_party/onnxruntime/lib/onnxruntime_providers_cuda.dll
+SearvidsServer/third_party/onnxruntime/lib/onnxruntime_providers_cuda.pdb

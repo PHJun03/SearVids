@@ -1,3 +1,76 @@
+# ============================================================
+# CMakeLists for SearvidsServer
+# ============================================================
+cmake_minimum_required(VERSION 3.15)
+project(SearvidsServer LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_BUILD_TYPE Release)
+
+include_directories(${PROJECT_SOURCE_DIR}/src)
+
+# ========== Vcpkg ==========
+if(WIN32)
+    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
+        set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
+    endif()
+endif()
+
+# ========== Add Utils ==========
+add_library(utils STATIC
+    src/utils.cpp
+    src/utils.h
+)
+
+# ========== Add FFmpeg ==========
+find_package(FFMPEG REQUIRED COMPONENTS AVCODEC AVFORMAT AVUTIL AVDEVICE SWSCALE SWRESAMPLE)
+
+add_library(ffmpeg_decoder STATIC
+    src/ffmpeg_decoder.cpp
+    src/ffmpeg_decoder.h
+)
+
+target_include_directories(ffmpeg_decoder PRIVATE ${FFMPEG_INCLUDE_DIRS})
+
+target_link_libraries(ffmpeg_decoder PRIVATE ${FFMPEG_LIBRARIES})
+
+# ========== Add Whisper ==========
+add_library(whisper_wrapper STATIC
+    src/whisper_wrapper.cpp
+    src/whisper_wrapper.h
+)
+
+# ========== Add ONNX ==========
+add_library(clip_onnx STATIC
+    src/clip_onnx.cpp
+    src/clip_onnx.h
+)
+
+set(ONNXRUNTIME_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/include")
+include_directories(${ONNXRUNTIME_INCLUDE_DIR})
+
+set(ONNXRUNTIME_LIB_DIR "${CMAKE_SOURCE_DIR}/third_party/onnxruntime/lib")
+target_link_libraries(clip_onnx PRIVATE ${ONNXRUNTIME_LIB_DIR}/onnxruntime.lib)
+
+# ========== Add Hnsw ==========
+add_library(hnsw_index STATIC
+    src/hnsw_index.cpp
+    src/hnsw_index.h
+)
+
+# create an INTERFACE target for header-only hnswlib
+add_library(hnswlib INTERFACE)
+target_include_directories(hnswlib INTERFACE ${CMAKE_SOURCE_DIR}/third_party/hnswlib)
+
+target_link_libraries(hnsw_index PRIVATE hnswlib)
+
+# ========== Tests ==========
+enable_testing()
+add_subdirectory(tests)
+
+
+
 #[[
 cmake_minimum_required(VERSION 3.16)
 project(SearvidsServer CXX)
@@ -185,54 +258,3 @@ endif()
 set_target_properties(SearvidsServer PROPERTIES RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)
 message(STATUS "✅ Searvids Server configuration complete")
 ]]
-
-# #[[
-# ============================================================
-# CMakeLists for Tests
-# ============================================================
-cmake_minimum_required(VERSION 3.15)
-project(SearvidsServer LANGUAGES CXX)
-
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Release)
-
-# ========== vcpkg ==========
-if(WIN32)
-    if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-        set(CMAKE_TOOLCHAIN_FILE "$ENV{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake" CACHE FILEPATH "")
-    endif()
-endif()
-
-include_directories(${PROJECT_SOURCE_DIR}/src)
-# ========== Add src/utils ==========
-add_library(utils STATIC
-    src/utils.cpp
-    src/utils.h
-)
-
-# ========== Add src/ffmpeg_decoder ==========
-find_package(FFMPEG REQUIRED COMPONENTS AVCODEC AVFORMAT AVUTIL AVDEVICE SWSCALE SWRESAMPLE)
-
-add_library(ffmpeg_decoder STATIC
-    src/ffmpeg_decoder.cpp
-    src/ffmpeg_decoder.h
-)
-
-target_include_directories(ffmpeg_decoder PRIVATE
-    ${FFMPEG_INCLUDE_DIRS}
-    ${PROJECT_SOURCE_DIR}/src
-)
-
-target_link_libraries(ffmpeg_decoder PRIVATE ${FFMPEG_LIBRARIES})
-
-# ========== Add src/whisper_wrapper ==========
-add_library(whisper_wrapper STATIC
-    src/whisper_wrapper.cpp
-    src/whisper_wrapper.h
-)
-
-# ========== Add tests ==========
-enable_testing()
-add_subdirectory(tests)
-# ]]
