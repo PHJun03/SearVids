@@ -1,50 +1,48 @@
 #pragma once
 #include <string>
-#include <vector>
+#include <functional>
 
 namespace downloader {
 
 struct DownloadProgress {
-    long long downloaded_bytes;
-    long long total_bytes;
-    float progress_percent;  // 0.0 ~ 100.0
+    size_t downloaded_bytes;
+    size_t total_bytes;
+    float progress_percent;
 };
 
-// Callback function type for progress updates
-using ProgressCallback = void(*)(const DownloadProgress& progress);
+using ProgressCallback = std::function<void(const DownloadProgress&)>;
 
 /**
- * Download file from URL to local path
- * @param url: source URL (http/https)
- * @param output_path: local file path to save
- * @param callback: optional progress callback (nullptr to skip)
- * @return true if successful, false otherwise
+ * Check if URL is valid (starts with http:// or https://)
+ */
+bool is_valid_url(const std::string& url);
+
+/**
+ * Check if URL is a YouTube URL
+ */
+bool is_youtube_url(const std::string& url);
+
+/**
+ * Extract filename from URL
+ * For YouTube URLs, extracts video ID
+ */
+std::string extract_filename(const std::string& url);
+
+/**
+ * Download file from URL
+ * Uses yt-dlp for YouTube URLs, curl for others
  */
 bool download(const std::string& url, const std::string& output_path, ProgressCallback callback = nullptr);
 
 /**
- * Download file with retry logic
- * @param url: source URL
- * @param output_path: local file path to save
- * @param max_retries: number of retries on failure
- * @param callback: optional progress callback
- * @return true if successful after retries
+ * Download with retry mechanism
  */
 bool download_with_retry(const std::string& url, const std::string& output_path, 
                          int max_retries = 3, ProgressCallback callback = nullptr);
 
 /**
- * Check if URL is valid (http/https)
- * @param url: URL to validate
- * @return true if valid
+ * Check if yt-dlp is available in PATH
  */
-bool is_valid_url(const std::string& url);
-
-/**
- * Extract filename from URL
- * @param url: source URL
- * @return filename (or empty string if invalid)
- */
-std::string extract_filename(const std::string& url);
+bool is_ytdlp_available();
 
 } // namespace downloader
