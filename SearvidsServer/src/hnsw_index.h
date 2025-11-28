@@ -9,6 +9,7 @@ struct TimelineEntry {
     float start_time;
     float end_time;
     std::string caption;
+    float similarity;
 };
 
 void create(int dim, const std::string& space = "cosine");

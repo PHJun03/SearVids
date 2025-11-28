@@ -1,232 +1,227 @@
 #include "server_api.h"
-#include "hnsw_index.h"
-#include "downloader.h"
-#include "ffmpeg_decoder.h"
-#include "clip_onnx.h"
-#include "whisper_wrapper.h"
 #include <nlohmann/json.hpp>
-#include <iostream>
-#include <sstream>
-
-using json = nlohmann::json;
+#include <thread>
+#include <functional>
+#include <memory>
 
 namespace server_api {
+
+// Define global state
+std::mutex g_sessions_mtx;
+std::unordered_map<std::string, VideoSession> g_sessions;
+whisper_wrapper::WhisperWrapper g_whisper;
+
+// Lazy initialize CLIP to avoid loading models during static initialization
+static std::unique_ptr<clip_onnx::ClipOnnx> g_clip_ptr;
+static std::mutex g_clip_mtx;
+
+static clip_onnx::ClipOnnx& get_clip() {
+    std::lock_guard<std::mutex> lock(g_clip_mtx);
+    if (!g_clip_ptr) {
+        g_clip_ptr = std::make_unique<clip_onnx::ClipOnnx>(
+            "onnx/onnx_models/clip_text_sim.onnx",
+            "onnx/onnx_models/clip_vision_sim.onnx",
+            false,  // CPU mode
+            224     // image size
+        );
+    }
+    return *g_clip_ptr;
+}
+
+std::string make_video_id(const std::string& url) {
+    std::hash<std::string> h;
+    return std::to_string(h(url));
+}
+
+void analyze_video_async(VideoSession& sess) {
+    sess.analyzing = true;
+    try {
+        // 1) Download video
+        if (!downloader::is_valid_url(sess.source_url)) {
+            throw std::runtime_error("Invalid URL");
+        }
+        auto filename = downloader::extract_filename(sess.source_url);
+        if (filename.empty()) filename = "input.mp4";
+        
+        std::string out = std::string("data/") + sess.video_id + "_" + filename;
+        downloader::download(sess.source_url, out);
+        sess.local_path = out;
+
+        // 2) Extract video metadata
+        auto info = ffmpeg_decoder::probe(out);
+        sess.duration_ms = info.duration_ms;
+        sess.nb_frames = (info.nb_frames > 0) ? info.nb_frames : ffmpeg_decoder::count_frames(out);
+
+        // 3) Transcribe with Whisper
+        std::string transcript = g_whisper.transcribe_from_file(out);
+        
+        // Create single segment (TODO: parse timestamps from whisper output)
+        struct Segment {
+            float start;
+            float end;
+            std::string text;
+        };
+        std::vector<Segment> segments;
+        segments.push_back({
+            0.0f, 
+            static_cast<float>(sess.duration_ms) / 1000.0f, 
+            transcript
+        });
+
+        // 4) Generate embeddings and index
+        for (const auto& seg : segments) {
+            auto emb = get_clip().encodeText(seg.text);  // Use get_clip() instead of g_clip
+            hnsw_index::add(emb, seg.start, seg.end, seg.text);
+        }
+
+        sess.done = true;
+    } catch (const std::exception& e) {
+        sess.error = e.what();
+    }
+    sess.analyzing = false;
+}
+
+void setup_routes(crow::SimpleApp& app) {
+    // POST /videos/analyze
+    CROW_ROUTE(app, "/videos/analyze")
+        .methods(crow::HTTPMethod::POST)
+        ([](const crow::request& req) {
+            nlohmann::json body;
+            try { 
+                body = nlohmann::json::parse(req.body); 
+            } catch (...) { 
+                body = nlohmann::json::object(); 
+            }
+            
+            std::string url = body.value("url", "");
+            if (url.empty()) {
+                return crow::response(400, R"({"status":"error","message":"url is required"})");
+            }
+
+            auto vid = make_video_id(url);
+            {
+                std::lock_guard<std::mutex> lk(g_sessions_mtx);
+                auto& sess = g_sessions[vid];
+                if (sess.video_id.empty()) {
+                    sess.video_id = vid;
+                    sess.source_url = url;
+                    std::thread([&sess]() { analyze_video_async(sess); }).detach();
+                }
+            }
+            
+            nlohmann::json res{{"status", "accepted"}, {"video_id", vid}};
+            return crow::response(202, res.dump());
+        });
+
+    // GET /videos/{video_id}/status
+    CROW_ROUTE(app, "/videos/<string>/status")
+        .methods(crow::HTTPMethod::GET)
+        ([](const std::string& video_id) {
+            std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            auto it = g_sessions.find(video_id);
+            if (it == g_sessions.end()) {
+                return crow::response(404, R"({"status":"error","message":"not found"})");
+            }
+            
+            const auto& s = it->second;
+            std::string status = s.error.empty() 
+                ? (s.done ? "done" : (s.analyzing ? "analyzing" : "pending"))
+                : "error";
+            
+            nlohmann::json res{
+                {"status", status},
+                {"error", s.error},
+                {"duration_ms", s.duration_ms},
+                {"nb_frames", s.nb_frames}
+            };
+            return crow::response(200, res.dump());
+        });
+
+    // POST /videos/{video_id}/search
+    CROW_ROUTE(app, "/videos/<string>/search")
+        .methods(crow::HTTPMethod::POST)
+        ([](const crow::request& req, const std::string& video_id) {
+            // Check video exists
+            {
+                std::lock_guard<std::mutex> lk(g_sessions_mtx);
+                if (g_sessions.find(video_id) == g_sessions.end()) {
+                    return crow::response(404, R"({"status":"error","message":"video not found"})");
+                }
+            }
+
+            // Parse search request
+            auto search_req = parse_search_request(req.body);
+            std::vector<float> query_emb;
+
+            if (!search_req.embedding.empty()) {
+                query_emb = search_req.embedding;
+            } else if (!search_req.query.empty()) {
+                try {
+                    query_emb = get_clip().encodeText(search_req.query);  // Use get_clip() instead of g_clip
+                } catch (const std::exception& e) {
+                    return crow::response(500, R"({"status":"error","message":"CLIP encoding failed"})");
+                }
+            } else {
+                return crow::response(400, R"({"status":"error","message":"query or embedding required"})");
+            }
+
+            // Search index
+            auto hnsw_results = hnsw_index::search(query_emb, search_req.topk);
+            
+            // Convert to API result format
+            std::vector<SearchResult> api_results;
+            for (const auto& r : hnsw_results) {
+                api_results.push_back({
+                    r.id, 
+                    r.start_time, 
+                    r.end_time, 
+                    r.caption, 
+                    r.similarity
+                });
+            }
+            
+            return create_search_response(api_results);
+        });
+
+    // GET /health
+    CROW_ROUTE(app, "/health")([]() {
+        return health_check();
+    });
+}
 
 SearchRequest parse_search_request(const std::string& body) {
     SearchRequest req;
     try {
-        auto j = json::parse(body);
-        
-        if (j.contains("embedding") && j["embedding"].is_array()) {
-            req.embedding = j["embedding"].get<std::vector<float>>();
+        auto json = nlohmann::json::parse(body);
+        req.query = json.value("query", "");
+        req.topk = json.value("topk", 5);
+        if (json.contains("embedding") && json["embedding"].is_array()) {
+            req.embedding = json["embedding"].get<std::vector<float>>();
         }
-        
-        if (j.contains("topk") && j["topk"].is_number_integer()) {
-            req.topk = j["topk"].get<int>();
-        }
-        
-    } catch (const json::exception& e) {
-        std::cerr << "JSON parse error: " << e.what() << std::endl;
+    } catch (...) {
+        // Return default
     }
-    
     return req;
 }
 
 crow::response create_search_response(const std::vector<SearchResult>& results) {
-    json response;
-    response["status"] = "success";
-    response["count"] = results.size();
-    
-    json results_json = json::array();
-    for (const auto& result : results) {
-        json item;
-        item["id"] = result.id;
-        item["start_time"] = result.start_time;
-        item["end_time"] = result.end_time;
-        item["caption"] = result.caption;
-        item["similarity"] = result.similarity;
-        results_json.push_back(item);
+    nlohmann::json json_results = nlohmann::json::array();
+    for (const auto& r : results) {
+        json_results.push_back({
+            {"id", r.id},
+            {"start_time", r.start_time},
+            {"end_time", r.end_time},
+            {"caption", r.caption},
+            {"similarity", r.similarity}
+        });
     }
-    
-    response["results"] = results_json;
-    
-    auto res = crow::response(response.dump());
-    res.add_header("Content-Type", "application/json");
-    return res;
+    nlohmann::json response{{"status", "ok"}, {"results", json_results}};
+    return crow::response(200, response.dump());
 }
 
 crow::response health_check() {
-    json response;
-    response["status"] = "ok";
-    response["service"] = "SearvidsServer";
-    response["index_size"] = static_cast<int>(hnsw_index::size());
-    
-    auto res = crow::response(response.dump());
-    res.add_header("Content-Type", "application/json");
-    return res;
-}
-
-void setup_routes(crow::SimpleApp& app) {
-    
-    // Health check endpoint
-    CROW_ROUTE(app, "/health")
-    .methods("GET"_method)
-    ([](const crow::request&) {
-        return health_check();
-    });
-    
-    // Search endpoint — search by embedding vector
-    CROW_ROUTE(app, "/search")
-    .methods("POST"_method)
-    ([](const crow::request& req) {
-        try {
-            auto search_req = parse_search_request(req.body);
-            
-            if (search_req.embedding.empty()) {
-                json error;
-                error["status"] = "error";
-                error["message"] = "embedding vector is required";
-                auto res = crow::response(400, error.dump());
-                res.add_header("Content-Type", "application/json");
-                return res;
-            }
-            
-            // Perform search using hnsw_index
-            auto entries = hnsw_index::search(search_req.embedding, search_req.topk);
-            
-            // Convert to SearchResult (with dummy similarity for now)
-            std::vector<SearchResult> results;
-            for (const auto& entry : entries) {
-                SearchResult sr;
-                sr.id = entry.id;
-                sr.start_time = entry.start_time;
-                sr.end_time = entry.end_time;
-                sr.caption = entry.caption;
-                sr.similarity = 0.0f;  // TODO: compute actual cosine similarity
-                results.push_back(sr);
-            }
-            
-            return create_search_response(results);
-            
-        } catch (const std::exception& e) {
-            json error;
-            error["status"] = "error";
-            error["message"] = e.what();
-            auto res = crow::response(500, error.dump());
-            res.add_header("Content-Type", "application/json");
-            return res;
-        }
-    });
-    
-    // Index info endpoint
-    CROW_ROUTE(app, "/index/info")
-    .methods("GET"_method)
-    ([](const crow::request&) {
-        json response;
-        response["status"] = "success";
-        response["index_size"] = static_cast<int>(hnsw_index::size());
-        
-        auto res = crow::response(response.dump());
-        res.add_header("Content-Type", "application/json");
-        return res;
-    });
-    
-    // Download video endpoint
-    CROW_ROUTE(app, "/download")
-    .methods("POST"_method)
-    ([](const crow::request& req) {
-        try {
-            auto j = json::parse(req.body);
-            
-            if (!j.contains("url")) {
-                json error;
-                error["status"] = "error";
-                error["message"] = "url is required";
-                auto res = crow::response(400, error.dump());
-                res.add_header("Content-Type", "application/json");
-                return res;
-            }
-            
-            std::string url = j["url"].get<std::string>();
-            std::string output_path = j.contains("output_path") ? 
-                j["output_path"].get<std::string>() : "./downloads/video.mp4";
-            
-            // Validate URL
-            if (!downloader::is_valid_url(url)) {
-                json error;
-                error["status"] = "error";
-                error["message"] = "invalid URL";
-                auto res = crow::response(400, error.dump());
-                res.add_header("Content-Type", "application/json");
-                return res;
-            }
-            
-            // Start download (with retry)
-            bool success = downloader::download_with_retry(url, output_path, 3);
-            
-            json response;
-            response["status"] = success ? "success" : "failed";
-            response["url"] = url;
-            response["output_path"] = output_path;
-            
-            auto res = crow::response(success ? 200 : 500, response.dump());
-            res.add_header("Content-Type", "application/json");
-            return res;
-            
-        } catch (const std::exception& e) {
-            json error;
-            error["status"] = "error";
-            error["message"] = e.what();
-            auto res = crow::response(500, error.dump());
-            res.add_header("Content-Type", "application/json");
-            return res;
-        }
-    });
-    
-    // Add entry endpoint — add embedding to index
-    CROW_ROUTE(app, "/index/add")
-    .methods("POST"_method)
-    ([](const crow::request& req) {
-        try {
-            auto j = json::parse(req.body);
-            
-            if (!j.contains("embedding") || !j.contains("start_time") || 
-                !j.contains("end_time") || !j.contains("caption")) {
-                json error;
-                error["status"] = "error";
-                error["message"] = "embedding, start_time, end_time, caption are required";
-                auto res = crow::response(400, error.dump());
-                res.add_header("Content-Type", "application/json");
-                return res;
-            }
-            
-            auto embedding = j["embedding"].get<std::vector<float>>();
-            float start_time = j["start_time"].get<float>();
-            float end_time = j["end_time"].get<float>();
-            std::string caption = j["caption"].get<std::string>();
-            
-            int id = hnsw_index::add(embedding, start_time, end_time, caption);
-            
-            json response;
-            response["status"] = "success";
-            response["id"] = id;
-            response["index_size"] = static_cast<int>(hnsw_index::size());
-            
-            auto res = crow::response(response.dump());
-            res.add_header("Content-Type", "application/json");
-            return res;
-            
-        } catch (const std::exception& e) {
-            json error;
-            error["status"] = "error";
-            error["message"] = e.what();
-            auto res = crow::response(500, error.dump());
-            res.add_header("Content-Type", "application/json");
-            return res;
-        }
-    });
-    
-    std::cout << "✅ API routes setup complete" << std::endl;
+    nlohmann::json json{{"status", "ok"}};
+    return crow::response(200, json.dump());
 }
 
 } // namespace server_api

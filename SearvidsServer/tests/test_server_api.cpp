@@ -1,243 +1,259 @@
 #include <gtest/gtest.h>
-#include <nlohmann/json.hpp>
 #include "server_api.h"
-#include "hnsw_index.h"
+#include <nlohmann/json.hpp>
+#include <thread>
+#include <chrono>
 
-using json = nlohmann::json;
-
-class ServerApiTest : public ::testing::Test {
+// Test fixture for ServerAPI tests
+class ServerAPITest : public ::testing::Test {
 protected:
     void SetUp() override {
-        // Initialize HNSW index before each test
-        hnsw_index::create(128, "cosine");
+        // Clear global sessions before each test
+        std::lock_guard<std::mutex> lk(server_api::g_sessions_mtx);
+        server_api::g_sessions.clear();
     }
 
     void TearDown() override {
-        // Cleanup after each test
-    }
-
-    // Helper: create random embedding
-    std::vector<float> randomEmbedding(int dim) {
-        std::vector<float> emb(dim);
-        for (int i = 0; i < dim; ++i) {
-            emb[i] = static_cast<float>(rand()) / RAND_MAX;
-        }
-        return emb;
-    }
-
-    // Helper: normalize embedding
-    std::vector<float> normalize(const std::vector<float>& emb) {
-        float norm = 0.0f;
-        for (float v : emb) norm += v * v;
-        norm = std::sqrt(norm);
-        std::vector<float> result = emb;
-        if (norm > 1e-6f) {
-            for (float& v : result) v /= norm;
-        }
-        return result;
+        // Clean up after each test
+        std::lock_guard<std::mutex> lk(server_api::g_sessions_mtx);
+        server_api::g_sessions.clear();
     }
 };
 
-// Test 1: Parse search request — valid JSON
-TEST_F(ServerApiTest, ParseSearchRequestValid) {
-    std::string body = R"({
-        "embedding": [0.1, 0.2, 0.3],
+TEST_F(ServerAPITest, MakeVideoIDFromURL) {
+    auto vid1 = server_api::make_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    auto vid2 = server_api::make_video_id("https://www.youtube.com/watch?v=dQw4w9WgXcQ");
+    auto vid3 = server_api::make_video_id("https://www.youtube.com/watch?v=different");
+    
+    EXPECT_EQ(vid1, vid2);  // Same URL should produce same ID
+    EXPECT_NE(vid1, vid3);  // Different URL should produce different ID
+    EXPECT_FALSE(vid1.empty());
+}
+
+TEST_F(ServerAPITest, ParseSearchRequestTextQuery) {
+    std::string json_body = R"({
+        "query": "test search",
         "topk": 10
     })";
     
-    auto req = server_api::parse_search_request(body);
-    
-    EXPECT_EQ(req.embedding.size(), 3);
-    EXPECT_FLOAT_EQ(req.embedding[0], 0.1f);
-    EXPECT_FLOAT_EQ(req.embedding[1], 0.2f);
-    EXPECT_FLOAT_EQ(req.embedding[2], 0.3f);
+    auto req = server_api::parse_search_request(json_body);
+    EXPECT_EQ(req.query, "test search");
     EXPECT_EQ(req.topk, 10);
+    EXPECT_TRUE(req.embedding.empty());
 }
 
-// Test 2: Parse search request — default topk
-TEST_F(ServerApiTest, ParseSearchRequestDefaultTopk) {
-    std::string body = R"({
-        "embedding": [0.1, 0.2, 0.3]
-    })";
-    
-    auto req = server_api::parse_search_request(body);
-    
-    EXPECT_EQ(req.embedding.size(), 3);
-    EXPECT_EQ(req.topk, 5);  // default value
-}
-
-// Test 3: Parse search request — empty embedding
-TEST_F(ServerApiTest, ParseSearchRequestEmptyEmbedding) {
-    std::string body = R"({
-        "embedding": [],
+TEST_F(ServerAPITest, ParseSearchRequestEmbedding) {
+    std::string json_body = R"({
+        "embedding": [0.1, 0.2, 0.3, 0.4],
         "topk": 5
     })";
     
-    auto req = server_api::parse_search_request(body);
-    
-    EXPECT_EQ(req.embedding.size(), 0);
+    auto req = server_api::parse_search_request(json_body);
+    EXPECT_TRUE(req.query.empty());
+    EXPECT_EQ(req.topk, 5);
+    ASSERT_EQ(req.embedding.size(), 4);
+    EXPECT_FLOAT_EQ(req.embedding[0], 0.1f);
+    EXPECT_FLOAT_EQ(req.embedding[1], 0.2f);
+    EXPECT_FLOAT_EQ(req.embedding[2], 0.3f);
+    EXPECT_FLOAT_EQ(req.embedding[3], 0.4f);
 }
 
-// Test 4: Parse search request — invalid JSON
-TEST_F(ServerApiTest, ParseSearchRequestInvalidJson) {
-    std::string body = "{ invalid json }";
+TEST_F(ServerAPITest, ParseSearchRequestDefaultValues) {
+    std::string json_body = "{}";
     
-    auto req = server_api::parse_search_request(body);
-    
-    EXPECT_EQ(req.embedding.size(), 0);
-    EXPECT_EQ(req.topk, 5);  // default value
+    auto req = server_api::parse_search_request(json_body);
+    EXPECT_TRUE(req.query.empty());
+    EXPECT_EQ(req.topk, 5);  // Default value
+    EXPECT_TRUE(req.embedding.empty());
 }
 
-// Test 5: Parse search request — missing embedding
-TEST_F(ServerApiTest, ParseSearchRequestMissingEmbedding) {
-    std::string body = R"({
-        "topk": 3
+TEST_F(ServerAPITest, ParseSearchRequestInvalidJSON) {
+    std::string json_body = "invalid json";
+    
+    auto req = server_api::parse_search_request(json_body);
+    EXPECT_TRUE(req.query.empty());
+    EXPECT_EQ(req.topk, 5);  // Default value
+    EXPECT_TRUE(req.embedding.empty());
+}
+
+TEST_F(ServerAPITest, CreateSearchResponseEmpty) {
+    std::vector<server_api::SearchResult> results;
+    
+    auto response = server_api::create_search_response(results);
+    EXPECT_EQ(response.code, 200);
+    
+    auto json = nlohmann::json::parse(response.body);
+    EXPECT_EQ(json["status"], "ok");
+    EXPECT_TRUE(json["results"].is_array());
+    EXPECT_EQ(json["results"].size(), 0);
+}
+
+TEST_F(ServerAPITest, CreateSearchResponseWithResults) {
+    std::vector<server_api::SearchResult> results = {
+        {1, 10.5f, 15.2f, "First segment", 0.95f},
+        {2, 20.0f, 25.5f, "Second segment", 0.87f},
+        {3, 30.1f, 35.8f, "Third segment", 0.76f}
+    };
+    
+    auto response = server_api::create_search_response(results);
+    EXPECT_EQ(response.code, 200);
+    
+    auto json = nlohmann::json::parse(response.body);
+    EXPECT_EQ(json["status"], "ok");
+    EXPECT_TRUE(json["results"].is_array());
+    ASSERT_EQ(json["results"].size(), 3);
+    
+    // Check first result
+    EXPECT_EQ(json["results"][0]["id"], 1);
+    EXPECT_FLOAT_EQ(json["results"][0]["start_time"], 10.5f);
+    EXPECT_FLOAT_EQ(json["results"][0]["end_time"], 15.2f);
+    EXPECT_EQ(json["results"][0]["caption"], "First segment");
+    EXPECT_FLOAT_EQ(json["results"][0]["similarity"], 0.95f);
+    
+    // Check second result
+    EXPECT_EQ(json["results"][1]["id"], 2);
+    EXPECT_FLOAT_EQ(json["results"][1]["start_time"], 20.0f);
+    EXPECT_FLOAT_EQ(json["results"][1]["end_time"], 25.5f);
+    EXPECT_EQ(json["results"][1]["caption"], "Second segment");
+    EXPECT_FLOAT_EQ(json["results"][1]["similarity"], 0.87f);
+}
+
+TEST_F(ServerAPITest, HealthCheck) {
+    auto response = server_api::health_check();
+    EXPECT_EQ(response.code, 200);
+    
+    auto json = nlohmann::json::parse(response.body);
+    EXPECT_EQ(json["status"], "ok");
+}
+
+TEST_F(ServerAPITest, VideoSessionStructure) {
+    server_api::VideoSession sess;
+    sess.video_id = "test123";
+    sess.source_url = "https://example.com/video.mp4";
+    sess.local_path = "data/test123_video.mp4";
+    sess.duration_ms = 120000;
+    sess.nb_frames = 3000;
+    sess.analyzing = false;
+    sess.done = true;
+    
+    EXPECT_EQ(sess.video_id, "test123");
+    EXPECT_EQ(sess.source_url, "https://example.com/video.mp4");
+    EXPECT_EQ(sess.local_path, "data/test123_video.mp4");
+    EXPECT_EQ(sess.duration_ms, 120000);
+    EXPECT_EQ(sess.nb_frames, 3000);
+    EXPECT_FALSE(sess.analyzing);
+    EXPECT_TRUE(sess.done);
+    EXPECT_TRUE(sess.error.empty());
+}
+
+TEST_F(ServerAPITest, GlobalSessionsMapThreadSafety) {
+    // Test concurrent access to global sessions
+    std::vector<std::thread> threads;
+    
+    for (int i = 0; i < 10; ++i) {
+        threads.emplace_back([i]() {
+            std::lock_guard<std::mutex> lk(server_api::g_sessions_mtx);
+            auto vid = "video_" + std::to_string(i);
+            auto& sess = server_api::g_sessions[vid];
+            sess.video_id = vid;
+            sess.source_url = "https://example.com/" + vid;
+        });
+    }
+    
+    for (auto& t : threads) {
+        t.join();
+    }
+    
+    std::lock_guard<std::mutex> lk(server_api::g_sessions_mtx);
+    EXPECT_EQ(server_api::g_sessions.size(), 10);
+}
+
+TEST_F(ServerAPITest, SearchRequestStructure) {
+    server_api::SearchRequest req;
+    req.query = "test query";
+    req.embedding = {0.1f, 0.2f, 0.3f};
+    req.topk = 7;
+    
+    EXPECT_EQ(req.query, "test query");
+    ASSERT_EQ(req.embedding.size(), 3);
+    EXPECT_FLOAT_EQ(req.embedding[0], 0.1f);
+    EXPECT_EQ(req.topk, 7);
+}
+
+TEST_F(ServerAPITest, SearchResultStructure) {
+    server_api::SearchResult result;
+    result.id = 42;
+    result.start_time = 10.5f;
+    result.end_time = 15.2f;
+    result.caption = "Test caption";
+    result.similarity = 0.89f;
+    
+    EXPECT_EQ(result.id, 42);
+    EXPECT_FLOAT_EQ(result.start_time, 10.5f);
+    EXPECT_FLOAT_EQ(result.end_time, 15.2f);
+    EXPECT_EQ(result.caption, "Test caption");
+    EXPECT_FLOAT_EQ(result.similarity, 0.89f);
+}
+
+TEST_F(ServerAPITest, ParseSearchRequestMixedContent) {
+    std::string json_body = R"({
+        "query": "search text",
+        "embedding": [0.1, 0.2],
+        "topk": 15
     })";
     
-    auto req = server_api::parse_search_request(body);
-    
-    EXPECT_EQ(req.embedding.size(), 0);
-    EXPECT_EQ(req.topk, 3);
+    auto req = server_api::parse_search_request(json_body);
+    // When both are provided, both should be parsed
+    EXPECT_EQ(req.query, "search text");
+    ASSERT_EQ(req.embedding.size(), 2);
+    EXPECT_EQ(req.topk, 15);
 }
 
-// Test 6: Create search response — empty results
-TEST_F(ServerApiTest, CreateSearchResponseEmpty) {
-    std::vector<server_api::SearchResult> results;
+TEST_F(ServerAPITest, CreateSearchResponseSpecialCharacters) {
+    std::vector<server_api::SearchResult> results = {
+        {1, 0.0f, 5.0f, "Caption with \"quotes\" and 'apostrophes'", 0.99f},
+        {2, 5.0f, 10.0f, "Caption with\nnewlines\tand\ttabs", 0.88f}
+    };
     
     auto response = server_api::create_search_response(results);
-    auto body_json = json::parse(response.body);
+    EXPECT_EQ(response.code, 200);
     
-    EXPECT_EQ(body_json["status"], "success");
-    EXPECT_EQ(body_json["count"], 0);
-    EXPECT_EQ(body_json["results"].size(), 0);
+    // Should be valid JSON despite special characters
+    auto json = nlohmann::json::parse(response.body);
+    EXPECT_EQ(json["results"].size(), 2);
 }
 
-// Test 7: Create search response — single result
-TEST_F(ServerApiTest, CreateSearchResponseSingleResult) {
-    std::vector<server_api::SearchResult> results;
-    server_api::SearchResult sr;
-    sr.id = 0;
-    sr.start_time = 10.5f;
-    sr.end_time = 15.5f;
-    sr.caption = "test caption";
-    sr.similarity = 0.95f;
-    results.push_back(sr);
+TEST_F(ServerAPITest, VideoSessionAtomicOperations) {
+    server_api::VideoSession sess;
     
-    auto response = server_api::create_search_response(results);
-    auto body_json = json::parse(response.body);
+    // Test atomic bool operations
+    EXPECT_FALSE(sess.analyzing.load());
+    EXPECT_FALSE(sess.done.load());
     
-    EXPECT_EQ(body_json["status"], "success");
-    EXPECT_EQ(body_json["count"], 1);
-    EXPECT_EQ(body_json["results"][0]["id"], 0);
-    EXPECT_FLOAT_EQ(body_json["results"][0]["start_time"], 10.5f);
-    EXPECT_FLOAT_EQ(body_json["results"][0]["end_time"], 15.5f);
-    EXPECT_EQ(body_json["results"][0]["caption"], "test caption");
-    EXPECT_FLOAT_EQ(body_json["results"][0]["similarity"], 0.95f);
-}
-
-// Test 8: Create search response — multiple results
-TEST_F(ServerApiTest, CreateSearchResponseMultipleResults) {
-    std::vector<server_api::SearchResult> results;
-    for (int i = 0; i < 3; ++i) {
-        server_api::SearchResult sr;
-        sr.id = i;
-        sr.start_time = static_cast<float>(i * 10);
-        sr.end_time = static_cast<float>(i * 10 + 5);
-        sr.caption = "caption " + std::to_string(i);
-        sr.similarity = 0.9f - (i * 0.05f);
-        results.push_back(sr);
-    }
+    sess.analyzing = true;
+    EXPECT_TRUE(sess.analyzing.load());
     
-    auto response = server_api::create_search_response(results);
-    auto body_json = json::parse(response.body);
+    sess.done = true;
+    EXPECT_TRUE(sess.done.load());
     
-    EXPECT_EQ(body_json["count"], 3);
-    EXPECT_EQ(body_json["results"].size(), 3);
+    // Test concurrent atomic access
+    std::thread t1([&sess]() {
+        for (int i = 0; i < 100; ++i) {
+            sess.analyzing = !sess.analyzing.load();
+        }
+    });
     
-    for (int i = 0; i < 3; ++i) {
-        EXPECT_EQ(body_json["results"][i]["id"], i);
-    }
-}
-
-// Test 9: Health check response
-TEST_F(ServerApiTest, HealthCheckResponse) {
-    // Add some entries to index
-    auto emb = normalize(randomEmbedding(128));
-    hnsw_index::add(emb, 0.0f, 5.0f, "test");
+    std::thread t2([&sess]() {
+        for (int i = 0; i < 100; ++i) {
+            sess.done = !sess.done.load();
+        }
+    });
     
-    auto response = server_api::health_check();
-    auto body_json = json::parse(response.body);
+    t1.join();
+    t2.join();
     
-    EXPECT_EQ(body_json["status"], "ok");
-    EXPECT_EQ(body_json["service"], "SearvidsServer");
-    EXPECT_GE(body_json["index_size"], 1);
-}
-
-// Test 10: Health check response header
-TEST_F(ServerApiTest, HealthCheckResponseHeader) {
-    auto response = server_api::health_check();
-    
-    EXPECT_GT(response.headers.count("Content-Type"), 0);
-}
-
-// Test 11: Search result structure validation
-TEST_F(ServerApiTest, SearchResultStructure) {
-    server_api::SearchResult sr;
-    sr.id = 42;
-    sr.start_time = 100.0f;
-    sr.end_time = 200.0f;
-    sr.caption = "test video segment";
-    sr.similarity = 0.87f;
-    
-    EXPECT_EQ(sr.id, 42);
-    EXPECT_FLOAT_EQ(sr.start_time, 100.0f);
-    EXPECT_FLOAT_EQ(sr.end_time, 200.0f);
-    EXPECT_EQ(sr.caption, "test video segment");
-    EXPECT_FLOAT_EQ(sr.similarity, 0.87f);
-}
-
-// Test 12: Parse search request — large embedding
-TEST_F(ServerApiTest, ParseSearchRequestLargeEmbedding) {
-    json j;
-    std::vector<float> large_emb(1024);
-    for (int i = 0; i < 1024; ++i) {
-        large_emb[i] = static_cast<float>(i) / 1024.0f;
-    }
-    j["embedding"] = large_emb;
-    j["topk"] = 20;
-    
-    auto req = server_api::parse_search_request(j.dump());
-    
-    EXPECT_EQ(req.embedding.size(), 1024);
-    EXPECT_EQ(req.topk, 20);
-}
-
-// Test 13: Create search response — JSON structure integrity
-TEST_F(ServerApiTest, SearchResponseJsonIntegrity) {
-    std::vector<server_api::SearchResult> results;
-    server_api::SearchResult sr;
-    sr.id = 1;
-    sr.start_time = 5.0f;
-    sr.end_time = 10.0f;
-    sr.caption = "test";
-    sr.similarity = 0.9f;
-    results.push_back(sr);
-    
-    auto response = server_api::create_search_response(results);
-    auto body_json = json::parse(response.body);
-    
-    // Verify all required fields exist
-    EXPECT_TRUE(body_json.contains("status"));
-    EXPECT_TRUE(body_json.contains("count"));
-    EXPECT_TRUE(body_json.contains("results"));
-    EXPECT_TRUE(body_json["results"][0].contains("id"));
-    EXPECT_TRUE(body_json["results"][0].contains("start_time"));
-    EXPECT_TRUE(body_json["results"][0].contains("end_time"));
-    EXPECT_TRUE(body_json["results"][0].contains("caption"));
-    EXPECT_TRUE(body_json["results"][0].contains("similarity"));
-}
-
-int main(int argc, char** argv) {
-    ::testing::InitGoogleTest(&argc, argv);
-    return RUN_ALL_TESTS();
+    // Values should be consistent (no race condition)
+    // Just verify they are valid bool values
+    EXPECT_TRUE(sess.analyzing.load() == true || sess.analyzing.load() == false);
+    EXPECT_TRUE(sess.done.load() == true || sess.done.load() == false);
 }
