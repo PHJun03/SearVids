@@ -8,6 +8,13 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release)
 
+# Build Optimization (LTO / IPO)
+include(CheckIPOSupported)
+check_ipo_supported(RESULT ipo_supported OUTPUT ipo_error)
+if(ipo_supported)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASE TRUE)
+endif()
+
 
 # ========== Main Executable ==========
 set(SOURCES
@@ -38,10 +45,15 @@ target_include_directories(ffmpeg_decoder PRIVATE ${FFMPEG_INCLUDE_DIRS})
 target_link_libraries(ffmpeg_decoder PRIVATE ${FFMPEG_LIBRARIES})
 
 # ========== Add Whisper ==========
+# whisper.cpp
+add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
+
 add_library(whisper_wrapper STATIC
     src/whisper_wrapper.cpp
     src/whisper_wrapper.h
 )
+
+target_include_directories(whisper_wrapper PRIVATE ${CMAKE_SOURCE_DIR}/third_party/whisper.cpp/include)
 
 # ========== Add ONNX ==========
 add_library(clip_onnx STATIC

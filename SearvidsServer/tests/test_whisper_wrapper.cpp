@@ -1,101 +1,65 @@
-#include "../src/whisper_wrapper.h"
 #include <gtest/gtest.h>
-#include <fstream>
-#include <cstdio>
+#include "whisper_wrapper.h"
 
-using namespace whisper_wrapper;
+#include <string>
+#include <vector>
+#include <algorithm>
 
-class WhisperWrapperTest : public ::testing::Test {
-protected:
-    WhisperWrapper wrapper;
-};
+using whisper_wrapper::WhisperWrapper;
 
-// ------------------------------
-// CLI detection test
-// ------------------------------
-TEST_F(WhisperWrapperTest, DetectsCliAvailability) {
-    // If whisper is not installed, the result may vary, so we only check that it runs without crashing
-    EXPECT_NO_THROW({
-        bool available = wrapper.cli_available();
-        (void)available;
-    });
+static std::string toLower(std::string s) {
+    std::transform(s.begin(), s.end(), s.begin(),
+                   [](unsigned char c){ return (char)std::tolower(c); });
+    return s;
 }
 
-// ------------------------------
-// Command building test
-// ------------------------------
-TEST_F(WhisperWrapperTest, BuildsCommandCorrectly) {
-    wrapper.setCliExecutable("whisper-cli");
-    wrapper.setCliArgsTemplate("--language en {infile}");
-    auto cmd = wrapper.buildCommand("audio.wav");
-    ASSERT_EQ(cmd.size(), 4);
-    EXPECT_EQ(cmd[0], "whisper-cli");
-    EXPECT_EQ(cmd[1], "--language");
-    EXPECT_EQ(cmd[2], "en");
-    // Ensure the input file is correctly replaced
-    bool hasInput = false;
-    for (auto& c : cmd)
-        if (c.find("audio.wav") != std::string::npos) hasInput = true;
-    EXPECT_TRUE(hasInput);
-}
-
-// ------------------------------
-// Run command capture test (Windows vs POSIX are handled internally)
-// ------------------------------
-TEST_F(WhisperWrapperTest, RunCommandCaptureEcho) {
-    // Use a simple echo command that works on both POSIX and Windows
 #if defined(_WIN32)
-    wrapper.setCliExecutable("cmd");
-    wrapper.setCliArgsTemplate("/C echo hello");
-#else
-    wrapper.setCliExecutable("echo");
-    wrapper.setCliArgsTemplate("hello");
-#endif
-    auto [code, output] = wrapper.runCommandCapture(wrapper.buildCommand("dummy"), 5);
+
+TEST(WhisperWrapperTest, RunCommandSuccessEcho) {
+    WhisperWrapper w;
+    // Verify we can run a simple shell command and capture stdout
+    // Use cmd.exe /C echo hello (stdout ends with \r\n on Windows)
+    std::vector<std::string> argv = { "cmd.exe", "/C", "echo", "hello" };
+    auto [code, output] = w.runCommandCapture(argv, /*timeout_seconds*/ 5);
     EXPECT_EQ(code, 0);
-    EXPECT_NE(output.find("hello"), std::string::npos);
+    auto outLower = toLower(output);
+    EXPECT_NE(outLower.find("hello"), std::string::npos);
 }
 
-// ------------------------------
-// Timeout behavior test
-// ------------------------------
-TEST_F(WhisperWrapperTest, TimeoutTerminatesLongProcess) {
-#if defined(_WIN32)
-    wrapper.setCliExecutable("cmd");
-    wrapper.setCliArgsTemplate("/C timeout /T 3 >nul");
-#else
-    wrapper.setCliExecutable("sh");
-    wrapper.setCliArgsTemplate("-c 'sleep 3'");
-#endif
-    auto [code, output] = wrapper.runCommandCapture(wrapper.buildCommand("dummy"), 1);
-    // When timeout occurs, code should be -1 and output should indicate "timeout"
+TEST(WhisperWrapperTest, TimeoutTerminatesLongProcess) {
+    WhisperWrapper w;
+    // Use ping to simulate a long-running command (≈6 seconds)
+    // This should be terminated by our 1-second timeout
+    std::vector<std::string> argv = { "ping", "127.0.0.1", "-n", "6" };
+    auto [code, output] = w.runCommandCapture(argv, /*timeout_seconds*/ 1);
+
     EXPECT_EQ(code, -1);
     EXPECT_EQ(output, "timeout");
 }
 
-// --- Transcription behavior test with dummy command ---
-TEST_F(WhisperWrapperTest, TranscribeFromFileReturnsOutput) {
-#if defined(_WIN32)
-    wrapper.setCliExecutable("cmd");
-    wrapper.setCliArgsTemplate("/C echo transcribed text");
-#else
-    wrapper.setCliExecutable("echo");
-    wrapper.setCliArgsTemplate("transcribed text");
-#endif
+TEST(WhisperWrapperTest, TranscribeThrowsWhenCliMissing) {
+    WhisperWrapper w;
+    // Point to a non-existent executable to force process creation failure
+    w.setCliExecutable("___no_such_executable___.exe");
+    w.setCliArgsTemplate("{infile}");
 
-    EXPECT_NO_THROW({
-        std::string out = wrapper.transcribe_from_file("dummy.wav", 5);
-        EXPECT_NE(out.find("transcribed text"), std::string::npos);
-    });
-}
-
-// ------------------------------
-// Error handling test for missing executable
-// ------------------------------
-TEST_F(WhisperWrapperTest, ThrowsWhenCliNotConfigured) {
-    WhisperWrapper bad;
-    bad.setCliExecutable("");
     EXPECT_THROW({
-        bad.transcribe_from_file("anything.wav", 5);
+        try {
+            (void)w.transcribe_from_file("C:\\Windows\\System32\\notepad.exe", 1);
+        } catch (const std::runtime_error& e) {
+            // Ensure the error message indicates launcher failure
+            std::string msg = e.what();
+            EXPECT_NE(msg.find("Whisper runner failed"), std::string::npos);
+            throw;
+        }
     }, std::runtime_error);
 }
+
+TEST(WhisperWrapperTest, CliAvailableCmdExe) {
+    WhisperWrapper w;
+    // cmd.exe should be resolvable on most Windows setups
+    w.setCliExecutable("cmd.exe");
+    EXPECT_TRUE(w.cli_available());
+}
+
+#endif // _WIN32

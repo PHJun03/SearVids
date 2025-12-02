@@ -77,10 +77,49 @@ void analyze_video_async(VideoSession& sess) {
             // If probe/count_frames are not implemented, leave defaults
         }
 
-        // 3) Transcribe with Whisper
+        // 3) Transcribe with Whisper (ggml model)
         std::string transcript;
         try {
-            transcript = g_whisper.transcribe_from_file(out);
+            // Configure whisper CLI once; safe to call multiple times
+            g_whisper.setCliExecutable("whisper-cli.exe");
+
+            // Model Path: env override, else relative default
+            const char* envModel = std::getenv("WHISPER_MODEL_PATH");
+            std::string modelPath = envModel
+            ? std::string(envModel)
+            : std::string("models/whisper/ggml-tiny.en.bin");
+
+            std::filesystem::create_directories("data");
+            std::string outTxt = std::string("data/") + sess.video_id + ".txt";
+
+            g_whisper.setCliArgsTemplate(std::string("--task transcribe -m ")
+                + modelPath
+                // + " --language auto"
+                + " --output-txt -of \"" + outTxt + "\" {infile}"
+            );
+
+            // Whisper CLI can take media files directly; it will decode audio internally.
+            // If your CLI requires WAV only, preconvert via ffmpeg externally before calling this.
+            transcript = g_whisper.transcribe_from_file(sess.local_path, /*timeout_seconds*/ 600);
+
+            // Fallback: read from output text file if CLI didn't return transcript
+            if (transcript.empty()) {
+                std::ifstream fin(outTxt);
+                if (fin) {
+                    std::ostringstream ss;
+                    ss << fin.rdbuf();
+                    transcript = ss.str();
+                }
+            }
+            
+            // Clean up empty transcript file
+            if (std::filesystem::exists(outTxt)) {
+                std::error_code ec;
+                auto sz = std::filesystem::file_size(outTxt, ec);
+                if (!ec && sz == 0) {
+                    std::filesystem::remove(outTxt, ec);
+                }
+            }
         } catch (...) {
             transcript.clear();
         }
@@ -122,12 +161,15 @@ void setup_routes(crow::SimpleApp& app) {
                 sess.source_url = url;
                 // Capture video_id to avoid dangling reference
                 std::thread([video_id = sess.video_id]() {
-                    std::lock_guard<std::mutex> lk2(g_sessions_mtx);
-                    auto it = g_sessions.find(video_id);
-                    if (it != g_sessions.end()) {
-                        // release lock while doing work
-                        VideoSession* psess = &it->second;
-                        lk2.~lock_guard();
+                    VideoSession* psess = nullptr;
+                    {
+                        std::lock_guard<std::mutex> lk2(g_sessions_mtx);
+                        auto it = g_sessions.find(video_id);
+                        if (it != g_sessions.end()) {
+                            psess = &it->second;
+                        }
+                    } // lock released here
+                    if (psess) {
                         analyze_video_async(*psess);
                     }
                 }).detach();
@@ -252,7 +294,8 @@ crow::response health_check() {
     return json_ok(nlohmann::json{
         {"status","ok"},
         {"service","SearvidsServer"},
-        {"index_size", (int)hnsw_index::size()}
+        {"index_size", (int)hnsw_index::size()},
+        {"whisper_cli_available", server_api::g_whisper.cli_available()}
     });
 }
 

@@ -76,48 +76,68 @@ std::vector<std::string> WhisperWrapper::buildCommand(const std::string& infile)
     std::vector<std::string> out;
     out.push_back(cliExe);
 
-    // Simple parser: split argsTemplate by spaces, substitute {infile}
+    // Quote infile for spaces/Korean paths
+    std::string quotedInfile;
+#if defined(_WIN32)
+    quotedInfile = "\"" + infile + "\"";
+#else
+    quotedInfile = "\"" + infile + "\"";
+#endif
+
     std::istringstream iss(argsTemplate);
     std::string tok;
+    bool substituted = false;
     while (iss >> tok) {
         size_t pos = tok.find("{infile}");
         if (pos != std::string::npos) {
             std::string replaced = tok;
-            replaced.replace(pos, strlen("{infile}"), infile);
+            replaced.replace(pos, strlen("{infile}"), quotedInfile);
             out.push_back(replaced);
+            substituted = true;
         } else {
             out.push_back(tok);
         }
     }
-    // If argsTemplate was empty, ensure infile is appended
-    if (out.size() == 1) out.push_back(infile);
+    if (!substituted) {
+        out.push_back(quotedInfile);
+    }
     return out;
 }
 
 std::pair<int,std::string> WhisperWrapper::runCommandCapture(const std::vector<std::string>& argv, int timeout_seconds) const {
 #if defined(_WIN32)
-    // Build command line: quote each arg
+    // Decide whether to run via cmd.exe (for shell built-ins like "timeout")
+    bool useCmdShell = false;
+    if (!argv.empty()) {
+        const std::string& a0 = argv[0];
+        // If not an absolute/relative path and not ending with .exe, assume shell built-in
+        bool hasExeExt = a0.size() >= 4 && (_stricmp(a0.c_str() + (a0.size() - 4), ".exe") == 0);
+        bool hasSlash = (a0.find('\\') != std::string::npos) || (a0.find('/') != std::string::npos);
+        if (!hasExeExt && !hasSlash) {
+            useCmdShell = true;
+        }
+    }
+
+    // Build command line (UTF-16)
     std::wstring cmdline;
+    if (useCmdShell) {
+        cmdline = L"cmd.exe /C ";
+    }
     for (size_t i=0;i<argv.size();++i) {
         std::string a = argv[i];
-        // Escape double quotes by doubling
-        std::wstring wa;
-        int needquotes = 0;
-        for (char c : a) {
-            if (c == ' ' || c == '\t') needquotes = 1;
-        }
-        // convert to wide string and quote
+        // convert to wide string
         int sl = MultiByteToWideChar(CP_UTF8, 0, a.c_str(), -1, nullptr, 0);
         std::wstring warg(sl, L'\0');
         MultiByteToWideChar(CP_UTF8, 0, a.c_str(), -1, &warg[0], sl);
+        if (!warg.empty() && warg.back() == L'\0') warg.pop_back();
+
+        // quote if contains spaces or tabs
+        bool needquotes = (warg.find(L' ') != std::wstring::npos) || (warg.find(L'\t') != std::wstring::npos);
         if (needquotes) {
             cmdline += L"\"";
-            // remove trailing \0
-            if (!warg.empty() && warg.back() == L'\0') warg.pop_back();
             cmdline += warg;
             cmdline += L"\"";
         } else {
-            if (!warg.empty() && warg.back() == L'\0') warg.pop_back();
             cmdline += warg;
         }
         if (i+1 < argv.size()) cmdline += L" ";
@@ -149,7 +169,7 @@ std::pair<int,std::string> WhisperWrapper::runCommandCapture(const std::vector<s
     // Create process
     BOOL ok = CreateProcessW(
         NULL,
-        &cmdline[0], // command line (wchar_t*)
+        &cmdline[0],
         NULL,
         NULL,
         TRUE,
