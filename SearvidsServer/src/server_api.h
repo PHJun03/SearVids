@@ -47,36 +47,24 @@ struct SearchResult {
 extern std::mutex g_sessions_mtx;
 extern std::unordered_map<std::string, VideoSession> g_sessions;
 extern whisper_wrapper::WhisperWrapper g_whisper;
-extern clip_onnx::ClipOnnx g_clip;
+// NOTE: removed extern ClipOnnx g_clip; we use a lazy getter in .cpp
 
-/**
- * Generate video ID from URL
- */
+// Generate video ID from URL
 std::string make_video_id(const std::string& url);
 
-/**
- * Async video analysis pipeline
- */
+// Async video analysis pipeline
 void analyze_video_async(VideoSession& sess);
 
-/**
- * Initialize API routes
- */
+// Initialize API routes
 void setup_routes(crow::SimpleApp& app);
 
-/**
- * Parse search request from JSON
- */
+// Parse search request from JSON (supports "query" and "query_text")
 SearchRequest parse_search_request(const std::string& body);
 
-/**
- * Create search response JSON
- */
+// Create search response JSON
 crow::response create_search_response(const std::vector<SearchResult>& results);
 
-/**
- * Health check endpoint
- */
+// Health check endpoint
 crow::response health_check();
 
 } // namespace server_api
