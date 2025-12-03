@@ -8,6 +8,8 @@ extern "C" {
 #include <libavutil/mem.h>
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/channel_layout.h>
+#include <libswresample/swresample.h>
 }
 
 #include <memory>
@@ -15,6 +17,8 @@ extern "C" {
 #include <iostream>
 #include <vector>
 #include <atomic>
+#include <cstdio>
+#include <cstdint>
 
 namespace ffmpeg_decoder {
 
@@ -200,6 +204,225 @@ int count_frames(const std::string& path) {
     if (frame_count < 0) frame_count = 0;
     if (frame_count > INT32_MAX) frame_count = INT32_MAX;
     return static_cast<int>(frame_count);
+}
+
+bool extract_audio(const std::string& video_path, 
+                   const std::string& audio_path,
+                   int sample_rate,
+                   int channels,
+                   std::function<void(double)> progress_callback) {
+    init_ffmpeg();
+
+    // 1) Open input video file
+    auto fmt_deleter = [](AVFormatContext* ctx) {
+        if (ctx) avformat_close_input(&ctx);
+    };
+    std::unique_ptr<AVFormatContext, decltype(fmt_deleter)> fmt_ctx(nullptr, fmt_deleter);
+    
+    try {
+        fmt_ctx.reset(open_input_format_context(video_path));
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to open video: " << e.what() << std::endl;
+        return false;
+    }
+
+    // 2) Find audio stream
+    int audio_stream_idx = av_find_best_stream(fmt_ctx.get(), AVMEDIA_TYPE_AUDIO, -1, -1, nullptr, 0);
+    if (audio_stream_idx < 0) {
+        std::cerr << "No audio stream found in: " << video_path << std::endl;
+        return false;
+    }
+
+    AVStream* audio_stream = fmt_ctx->streams[audio_stream_idx];
+
+    // 3) Open audio decoder
+    auto codec_deleter = [](AVCodecContext* ctx) {
+        if (ctx) avcodec_free_context(&ctx);
+    };
+    std::unique_ptr<AVCodecContext, decltype(codec_deleter)> codec_ctx(nullptr, codec_deleter);
+    
+    try {
+        codec_ctx.reset(open_decoder_for_stream(audio_stream));
+    } catch (const std::exception& e) {
+        std::cerr << "Failed to open audio decoder: " << e.what() << std::endl;
+        return false;
+    }
+
+    // 4) Setup SwrContext for resampling
+    SwrContext* swr_ctx = swr_alloc();
+    if (!swr_ctx) {
+        std::cerr << "Failed to allocate SwrContext" << std::endl;
+        return false;
+    }
+
+    AVChannelLayout in_ch_layout = codec_ctx->ch_layout;
+    AVChannelLayout out_ch_layout;
+    av_channel_layout_default(&out_ch_layout, channels);
+
+    // Set input parameters
+    av_opt_set_chlayout(swr_ctx, "in_chlayout", &in_ch_layout, 0);
+    av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
+    av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
+
+    // Output format (16kHz mono for Whisper)
+    int64_t out_channel_layout = (channels == 1) ? AV_CH_LAYOUT_MONO : AV_CH_LAYOUT_STEREO;
+    av_opt_set_int(swr_ctx, "out_channel_layout", out_channel_layout, 0);
+    av_opt_set_int(swr_ctx, "out_sample_rate", sample_rate, 0);
+    av_opt_set_sample_fmt(swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);  // 16-bit PCM
+
+    if (swr_init(swr_ctx) < 0) {
+        std::cerr << "Failed to initialize SwrContext" << std::endl;
+        swr_free(&swr_ctx);
+        return false;
+    }
+
+    // 5) Open output WAV file
+    FILE* out_file = fopen(audio_path.c_str(), "wb");
+    if (!out_file) {
+        std::cerr << "Failed to open output file: " << audio_path << std::endl;
+        swr_free(&swr_ctx);
+        return false;
+    }
+
+    // Write WAV header (44 bytes placeholder, will update later)
+    uint8_t wav_header[44] = {0};
+    fwrite(wav_header, 1, 44, out_file);
+
+    // 6) Decode and resample audio
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        std::cerr << "Failed to allocate packet/frame" << std::endl;
+        if (pkt) av_packet_free(&pkt);
+        if (frame) av_frame_free(&frame);
+        swr_free(&swr_ctx);
+        fclose(out_file);
+        return false;
+    }
+
+    int64_t total_samples = 0;
+    std::vector<uint8_t> resample_buffer;
+
+    while (av_read_frame(fmt_ctx.get(), pkt) >= 0) {
+        if (pkt->stream_index == audio_stream_idx) {
+            int ret = avcodec_send_packet(codec_ctx.get(), pkt);
+            if (ret < 0) {
+                av_packet_unref(pkt);
+                continue;
+            }
+
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(codec_ctx.get(), frame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+                if (ret < 0) break;
+
+                // Calculate output sample count
+                int out_samples = av_rescale_rnd(
+                    swr_get_delay(swr_ctx, codec_ctx->sample_rate) + frame->nb_samples,
+                    sample_rate, codec_ctx->sample_rate, AV_ROUND_UP);
+
+                // Allocate output buffer
+                int out_buffer_size = av_samples_get_buffer_size(nullptr, channels, out_samples, AV_SAMPLE_FMT_S16, 1);
+                resample_buffer.resize(out_buffer_size);
+
+                uint8_t* out_ptr = resample_buffer.data();
+                int converted = swr_convert(swr_ctx, &out_ptr, out_samples,
+                                           (const uint8_t**)frame->data, frame->nb_samples);
+
+                if (converted > 0) {
+                    int bytes_to_write = converted * channels * sizeof(int16_t);
+                    fwrite(resample_buffer.data(), 1, bytes_to_write, out_file);
+                    total_samples += converted;
+                }
+
+                av_frame_unref(frame);
+            }
+        }
+        av_packet_unref(pkt);
+    }
+
+    // Flush decoder
+    avcodec_send_packet(codec_ctx.get(), nullptr);
+    int ret;
+    while ((ret = avcodec_receive_frame(codec_ctx.get(), frame)) >= 0) {
+        int out_samples = av_rescale_rnd(
+            swr_get_delay(swr_ctx, codec_ctx->sample_rate) + frame->nb_samples,
+            sample_rate, codec_ctx->sample_rate, AV_ROUND_UP);
+
+        int out_buffer_size = av_samples_get_buffer_size(nullptr, channels, out_samples, AV_SAMPLE_FMT_S16, 1);
+        resample_buffer.resize(out_buffer_size);
+
+        uint8_t* out_ptr = resample_buffer.data();
+        int converted = swr_convert(swr_ctx, &out_ptr, out_samples,
+                                   (const uint8_t**)frame->data, frame->nb_samples);
+
+        if (converted > 0) {
+            int bytes_to_write = converted * channels * sizeof(int16_t);
+            fwrite(resample_buffer.data(), 1, bytes_to_write, out_file);
+            total_samples += converted;
+        }
+
+        av_frame_unref(frame);
+    }
+
+    // Flush resampler
+    while (true) {
+        int out_samples = sample_rate;  // 1 second buffer
+        int out_buffer_size = av_samples_get_buffer_size(nullptr, channels, out_samples, AV_SAMPLE_FMT_S16, 1);
+        resample_buffer.resize(out_buffer_size);
+
+        uint8_t* out_ptr = resample_buffer.data();
+        int converted = swr_convert(swr_ctx, &out_ptr, out_samples, nullptr, 0);
+
+        if (converted <= 0) break;
+
+        int bytes_to_write = converted * channels * sizeof(int16_t);
+        fwrite(resample_buffer.data(), 1, bytes_to_write, out_file);
+        total_samples += converted;
+    }
+
+    // 7) Update WAV header
+    int32_t data_size = total_samples * channels * sizeof(int16_t);
+    int32_t file_size = data_size + 36;  // 44 - 8
+
+    fseek(out_file, 0, SEEK_SET);
+
+    // RIFF header
+    fwrite("RIFF", 1, 4, out_file);
+    fwrite(&file_size, 4, 1, out_file);
+    fwrite("WAVE", 1, 4, out_file);
+
+    // fmt subchunk
+    fwrite("fmt ", 1, 4, out_file);
+    int32_t fmt_chunk_size = 16;
+    fwrite(&fmt_chunk_size, 4, 1, out_file);
+    int16_t audio_format = 1;  // PCM
+    fwrite(&audio_format, 2, 1, out_file);
+    int16_t num_channels = channels;
+    fwrite(&num_channels, 2, 1, out_file);
+    int32_t sample_rate_val = sample_rate;
+    fwrite(&sample_rate_val, 4, 1, out_file);
+    int32_t byte_rate = sample_rate * channels * sizeof(int16_t);
+    fwrite(&byte_rate, 4, 1, out_file);
+    int16_t block_align = channels * sizeof(int16_t);
+    fwrite(&block_align, 2, 1, out_file);
+    int16_t bits_per_sample = 16;
+    fwrite(&bits_per_sample, 2, 1, out_file);
+
+    // data subchunk
+    fwrite("data", 1, 4, out_file);
+    fwrite(&data_size, 4, 1, out_file);
+
+    // Cleanup
+    fclose(out_file);
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    swr_free(&swr_ctx);
+
+    std::cout << "Audio extracted: " << total_samples << " samples, " 
+              << (total_samples / sample_rate) << " seconds" << std::endl;
+
+    return true;
 }
 
 } // namespace ffmpeg_decoder

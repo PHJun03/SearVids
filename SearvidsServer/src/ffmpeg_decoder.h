@@ -3,6 +3,8 @@
 #include <string>
 #include <stdexcept>
 #include <cstdint>
+#include <vector>
+#include <functional>
 
 namespace ffmpeg_decoder {
 
@@ -17,6 +19,11 @@ struct VideoInfo {
     int64_t nb_frames = 0;   // reported/decoded frames (0 if unknown)
     std::string format_name;
     std::string codec_name;
+
+    // Audio stream information
+    int audio_sample_rate = 0;
+    int audio_channels = 0;        // 1=mono, 2=stereo
+    std::string audio_codec_name;
 };
 
 // Initialize FFmpeg global state (thread-safe, idempotent).
@@ -29,7 +36,47 @@ VideoInfo probe(const std::string& path);
 // This performs decoding; it is slower but accurate. Throws std::runtime_error on error.
 int count_frames(const std::string& path);
 
+// Extract audio track from video and save as WAV file.
+bool extract_audio(const std::string& video_path,                               // Input video file path
+                   const std::string& audio_path,                               // Output WAV file path (will be overwritten)
+                   int sample_rate = 16000,                                     // Target sample rate in Hz (default: 16000 for Whisper)
+                   int channels = 1,                                            // Target channels (1=mono, 2=stereo; default: 1 for Whisper)
+                   std::function<void(double)> progress_callback = nullptr);    // Progress callback (0.0 to 1.0), can be nullptr
+
+// Extract video frames at specified intervals
+struct FrameData {
+    std::vector<uint8_t> rgb_data;  // RGB24 format (width * height * 3 bytes)
+    int width;
+    int height;
+    int64_t timestamp_ms;           // Frame timestamp in milliseconds
+};
+
+std::vector<FrameData> extract_frames(const std::string& video_path,    // Input video file path
+                                      double interval_seconds = 2.0,    // Time interval between extracted frames (default: 2.0 seconds)
+                                      int max_frames = 0,                // Maximum number of frames to extract (0 = no limit)
+                                      int64_t start_time_ms = 0,        // Start time in milliseconds (default: 0)
+                                      int64_t end_time_ms = 0);         // End time in milliseconds (0 = until end)
+
+// Extract a single frame at specific timestamp
+FrameData extract_frame_at(const std::string& video_path,   // Input video file path
+                           int64_t timestamp_ms,             // Timestamp in milliseconds
+                           bool seek_backward = true);       // If true, seek to nearest keyframe before timestamp
+
 // Utility: convert duration (AV) to ms (used internally)
 int64_t avtime_to_ms(int64_t avtime, int64_t time_base_num, int64_t time_base_den);
+
+// Utility: convert ms to AV time base
+int64_t ms_to_avtime(int64_t ms, int64_t time_base_num, int64_t time_base_den);
+
+// Get FFmpeg version information
+struct FFmpegVersion {
+    std::string avformat_version;
+    std::string avcodec_version;
+    std::string avutil_version;
+    std::string swresample_version;
+    std::string swscale_version;
+};
+
+FFmpegVersion get_ffmpeg_version();
 
 } // namespace ffmpeg_decoder

@@ -33,7 +33,13 @@ add_library(utils STATIC
 )
 
 # ========== Add FFmpeg ==========
-find_package(FFMPEG REQUIRED COMPONENTS AVCODEC AVFORMAT AVUTIL AVDEVICE SWSCALE SWRESAMPLE)
+find_package(FFMPEG REQUIRED COMPONENTS
+    AVFORMAT
+    AVCODEC
+    AVUTIL
+    SWSCALE
+    SWRESAMPLE
+)
 
 add_library(ffmpeg_decoder STATIC
     src/ffmpeg_decoder.cpp

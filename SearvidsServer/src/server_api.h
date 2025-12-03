@@ -6,6 +6,7 @@
 #include <unordered_map>
 #include <mutex>
 #include <atomic>
+#include <chrono>
 
 #include "downloader.h"
 #include "ffmpeg_decoder.h"
@@ -20,11 +21,19 @@ struct VideoSession {
     std::string video_id;
     std::string source_url;
     std::string local_path;
+
     std::atomic<bool> analyzing{false};
     std::atomic<bool> done{false};
+    std::atomic<int> progress_percent{0};
+
+    std::string current_stage;
     std::string error;
+
     int64_t duration_ms{0};
     int64_t nb_frames{0};
+
+    std::chrono::system_clock::time_point started_at;
+    std::chrono::system_clock::time_point completed_at;
 };
 
 // Search request structure
@@ -32,6 +41,8 @@ struct SearchRequest {
     std::string query;
     std::vector<float> embedding;
     int topk = 5;
+    int offset = 0;
+    float min_similarity = 0.0f;
 };
 
 // Search result structure
