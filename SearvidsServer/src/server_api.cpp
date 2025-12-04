@@ -57,7 +57,7 @@ void analyze_video_async(VideoSession& sess) {
     sess.progress_percent = 0;
 
     try {
-        // 1) Download video
+        // 1) Download video (0-10%)
         if (!downloader::is_valid_url(sess.source_url)) {
             throw std::runtime_error("Invalid URL");
         }
@@ -65,14 +65,16 @@ void analyze_video_async(VideoSession& sess) {
         if (filename.empty()) filename = "input.mp4";
         std::string out = std::string("data/") + sess.video_id + "_" + filename;
 
+        std::cout << "[" << sess.video_id << "] Downloading: " << sess.source_url << std::endl;
+
         bool ok = downloader::download_with_retry(sess.source_url, out, 3);
         if (!ok) throw std::runtime_error("Download failed after 3 retries");
         
         sess.local_path = out;
-        sess.progress_percent = 20;
+        sess.progress_percent = 10;
         std::cout << "[" << sess.video_id << "] Download complete: " << out << std::endl;
 
-        // 2) Probe video metadata
+        // 2) Probe video metadata (10-15%)
         sess.current_stage = "probing";
         std::cout << "[" << sess.video_id << "] Probing video metadata..." << std::endl;
         
@@ -84,137 +86,181 @@ void analyze_video_async(VideoSession& sess) {
         
         sess.duration_ms = info.duration_ms;
         sess.nb_frames = (info.nb_frames > 0) ? info.nb_frames : ffmpeg_decoder::count_frames(out);
-        sess.progress_percent = 30;
-        
+        sess.progress_percent = 15;
+
         std::cout << "[" << sess.video_id << "] Video info: "
                   << "duration=" << sess.duration_ms << "ms, "
                   << "frames=" << sess.nb_frames << ", "
-                  << "has_audio=" << info.has_audio << std::endl;
+                  << "has_audio=" << info.has_audio 
+                  << ", has_video=" << info.has_video << std::endl;
 
-        // 3) Extract audio
-        sess.current_stage = "extracting_audio";
-        std::string audio_path = "data/" + sess.video_id + "_audio.wav";
-        
-        if (!info.has_audio) {
-            throw std::runtime_error("Video has no audio track for transcription");
-        }
+        // 3) Extract and index visual frames (15-45%)
+        if (info.has_video) {
+            sess.current_stage = "extracting_frames";
+            std::cout << "[" << sess.video_id << "] Extracting visual frames..." << std::endl;
 
-        std::cout << "[" << sess.video_id << "] Extracting audio: " 
-                  << info.audio_codec_name << " (" 
-                  << info.audio_sample_rate << "Hz, " 
-                  << info.audio_channels << " channels)" << std::endl;
+            try {
+                // Extract frames every 2 seconds
+                auto frames = ffmpeg_decoder::extract_frames(
+                    sess.local_path,
+                    2.0,  // 2 seconds interval
+                    0,    // no max limit
+                    0,    // start from beginning
+                    0     // until end
+                );
 
-        bool audio_ok = ffmpeg_decoder::extract_audio(
-            sess.local_path,
-            audio_path,
-            16000,  // Whisper requires 16kHz
-            1,      // Mono
-            [&sess](double progress) {
-                int new_progress = 30 + static_cast<int>(progress * 30.0);
-                sess.progress_percent = new_progress;
+                sess.progress_percent = 30;
+                std::cout << "[" << sess.video_id << "] Extracted " << frames.size() << " frames" << std::endl;
+
+                // Index frames with CLIP Vision
+                sess.current_stage = "indexing_frames";
+                auto& clip = get_clip();
+
+                for (size_t i = 0; i < frames.size(); ++i) {
+                    const auto& frame = frames[i];
+                    
+                    try {
+                        // Encode frame with CLIP Vision
+                        auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
+                        
+                        // Add to HNSW index with "visual" tag
+                        hnsw_index::add(
+                            emb,
+                            static_cast<float>(frame.timestamp_ms) / 1000.0f,
+                            static_cast<float>(frame.timestamp_ms) / 1000.0f + 1.0f,
+                            "visual_frame"
+                        );
+                        
+                        sess.indexed_visual_frames++;
+                        
+                        // Update progress: 30% -> 45%
+                        int progress = 30 + static_cast<int>((i + 1) * 15.0 / frames.size());
+                        sess.progress_percent = progress;
+                        
+                    } catch (const std::exception& e) {
+                        std::cerr << "[" << sess.video_id << "] Failed to encode frame at " 
+                                  << frame.timestamp_ms << "ms: " << e.what() << std::endl;
+                    }
+                }
+
+                std::cout << "[" << sess.video_id << "] Indexed " << sess.indexed_visual_frames 
+                          << " visual frames" << std::endl;
+                
+            } catch (const std::exception& e) {
+                std::cerr << "[" << sess.video_id << "] Frame extraction failed: " 
+                          << e.what() << std::endl;
+                // Continue to audio processing
             }
-        );
-
-        if (!audio_ok) {
-            throw std::runtime_error("Failed to extract audio");
         }
-        
-        sess.progress_percent = 60;
-        std::cout << "[" << sess.video_id << "] Audio extraction complete: " << audio_path << std::endl;
 
-        // 4) Transcribe with Whisper (ggml model)
-        sess.current_stage = "transcribing";
-        std::string transcript;
-        
-        try {
-            std::cout << "[" << sess.video_id << "] Starting transcription..." << std::endl;
-            
-            // Configure whisper CLI
-            g_whisper.setCliExecutable("whisper-cli.exe");
+        sess.progress_percent = 45;
 
-            const char* envModel = std::getenv("WHISPER_MODEL_PATH");
-            std::string modelPath = envModel
-                ? std::string(envModel)
-                : std::string("models/whisper/ggml-tiny.en.bin");
+        // 4) Extract audio (45-55%)
+        if (info.has_audio) {
+            sess.current_stage = "extracting_audio";
+            std::string audio_path = "data/" + sess.video_id + "_audio.wav";
 
-            std::filesystem::create_directories("data");
-            std::string outTxt = std::string("data/") + sess.video_id + ".txt";
+            std::cout << "[" << sess.video_id << "] Extracting audio..." << std::endl;
 
-            g_whisper.setCliArgsTemplate(
-                std::string("--task transcribe -m ") + modelPath +
-                " --output-txt -of \"" + outTxt + "\" {infile}"
+            bool audio_ok = ffmpeg_decoder::extract_audio(
+                sess.local_path,
+                audio_path,
+                16000,  // 16kHz for Whisper
+                1,      // Mono
+                [&sess](double progress) {
+                    int new_progress = 45 + static_cast<int>(progress * 10.0);
+                    sess.progress_percent = new_progress;
+                }
             );
 
-            // Use extracted WAV file (guaranteed 16kHz mono)
-            transcript = g_whisper.transcribe_from_file(audio_path, 600);
-
-            // Fallback: read from output text file
-            if (transcript.empty()) {
-                std::ifstream fin(outTxt);
-                if (fin) {
-                    std::ostringstream ss;
-                    ss << fin.rdbuf();
-                    transcript = ss.str();
-                }
+            if (!audio_ok) {
+                throw std::runtime_error("Failed to extract audio");
             }
             
-            // Clean up empty transcript file
-            if (std::filesystem::exists(outTxt)) {
-                std::error_code ec;
-                auto sz = std::filesystem::file_size(outTxt, ec);
-                if (!ec && sz == 0) {
-                    std::filesystem::remove(outTxt, ec);
-                }
-            }
-            
-            std::cout << "[" << sess.video_id << "] Transcription complete: " 
-                      << transcript.length() << " characters" << std::endl;
-        } catch (const std::exception& e) {
-            std::cerr << "[" << sess.video_id << "] Transcription failed: " 
-                      << e.what() << std::endl;
-            transcript.clear();
-        }
+            sess.progress_percent = 55;
+            std::cout << "[" << sess.video_id << "] Audio extraction complete" << std::endl;
 
-        // Clean up temporary audio file
-        std::error_code ec;
-        std::filesystem::remove(audio_path, ec);
-        if (ec) {
-            std::cerr << "[" << sess.video_id << "] Warning: Failed to remove temp audio file: " 
-                      << ec.message() << std::endl;
-        }
-        
-        sess.progress_percent = 80;
+            // 5) Transcribe with Whisper (55-75%)
+            sess.current_stage = "transcribing";
+            std::string transcript;
 
-        // 5) Create segment(s)
-        sess.current_stage = "indexing";
-        struct Segment { float start; float end; std::string text; };
-        std::vector<Segment> segments;
-        float dur_s = (sess.duration_ms > 0) 
-            ? static_cast<float>(sess.duration_ms) / 1000.0f 
-            : 0.0f;
-        
-        segments.push_back({
-            0.0f, 
-            dur_s, 
-            transcript.empty() ? "no transcript" : transcript
-        });
-
-        std::cout << "[" << sess.video_id << "] Generating embeddings for " 
-                  << segments.size() << " segments..." << std::endl;
-
-        // 6) Generate embeddings and index
-        auto& clip = get_clip();
-        int segment_count = 0;
-        for (const auto& seg : segments) {
             try {
-                auto emb = clip.encodeText(seg.text);
-                hnsw_index::add(emb, seg.start, seg.end, seg.text);
-                segment_count++;
+                std::cout << "[" << sess.video_id << "] Starting transcription..." << std::endl;
                 
-                sess.progress_percent = 80 + (segment_count * 15 / static_cast<int>(segments.size()));
+                g_whisper.setCliExecutable("whisper-cli.exe");
+
+                const char* envModel = std::getenv("WHISPER_MODEL_PATH");
+                std::string modelPath = envModel
+                    ? std::string(envModel)
+                    : std::string("models/whisper/ggml-tiny.en.bin");
+
+                std::filesystem::create_directories("data");
+                std::string outTxt = std::string("data/") + sess.video_id + ".txt";
+
+                g_whisper.setCliArgsTemplate(
+                    std::string("--task transcribe -m ") + modelPath +
+                    " --output-txt -of \"" + outTxt + "\" {infile}"
+                );
+
+                transcript = g_whisper.transcribe_from_file(audio_path, 600);
+
+                if (transcript.empty()) {
+                    std::ifstream fin(outTxt);
+                    if (fin) {
+                        std::ostringstream ss;
+                        ss << fin.rdbuf();
+                        transcript = ss.str();
+                    }
+                }
+                
+                if (std::filesystem::exists(outTxt)) {
+                    std::error_code ec;
+                    auto sz = std::filesystem::file_size(outTxt, ec);
+                    if (!ec && sz == 0) {
+                        std::filesystem::remove(outTxt, ec);
+                    }
+                }
+
+                std::cout << "[" << sess.video_id << "] Transcription complete: " 
+                          << transcript.length() << " characters" << std::endl;
             } catch (const std::exception& e) {
-                std::cerr << "[" << sess.video_id << "] Failed to encode segment: " 
+                std::cerr << "[" << sess.video_id << "] Transcription failed: " 
                           << e.what() << std::endl;
+                transcript.clear();
+            }
+
+            // Clean up audio file
+            std::error_code ec;
+            std::filesystem::remove(audio_path, ec);
+            
+            sess.progress_percent = 75;
+
+            // 6) Index audio transcript (75-90%)
+            sess.current_stage = "indexing_audio";
+            struct Segment { float start; float end; std::string text; };
+            std::vector<Segment> segments;
+            float dur_s = (sess.duration_ms > 0) 
+                ? static_cast<float>(sess.duration_ms) / 1000.0f 
+                : 0.0f;
+            
+            segments.push_back({
+                0.0f, 
+                dur_s, 
+                transcript.empty() ? "no transcript" : transcript
+            });
+
+            std::cout << "[" << sess.video_id << "] Indexing audio segments..." << std::endl;
+
+            auto& clip = get_clip();
+            for (const auto& seg : segments) {
+                try {
+                    auto emb = clip.encodeText(seg.text);
+                    hnsw_index::add(emb, seg.start, seg.end, seg.text);
+                    sess.indexed_audio_segments++;
+                } catch (const std::exception& e) {
+                    std::cerr << "[" << sess.video_id << "] Failed to encode audio segment: " 
+                              << e.what() << std::endl;
+                }
             }
         }
 
@@ -228,8 +274,8 @@ void analyze_video_async(VideoSession& sess) {
         ).count();
         
         std::cout << "[" << sess.video_id << "] Analysis completed in " 
-                  << duration << " seconds (duration: " << dur_s 
-                  << "s, segments: " << segment_count << ")" << std::endl;
+                  << duration << " seconds (audio_segments: " << sess.indexed_audio_segments
+                  << ", visual_frames: " << sess.indexed_visual_frames << ")" << std::endl;
 
     } catch (const std::exception& e) {
         sess.error = e.what();
@@ -360,13 +406,17 @@ SearchRequest parse_search_request(const std::string& body) {
     SearchRequest req;
     try {
         auto json = nlohmann::json::parse(body);
-        // Support both "query" and "query_text"
+        
         if (json.contains("query") && json["query"].is_string())
             req.query = json["query"].get<std::string>();
         else if (json.contains("query_text") && json["query_text"].is_string())
             req.query = json["query_text"].get<std::string>();
 
         req.topk = json.value("topk", 5);
+        req.offset = json.value("offset", 0);
+        req.min_similarity = json.value("min_similarity", 0.0f);
+        req.search_type = json.value("search_type", "both");
+        
         if (json.contains("embedding") && json["embedding"].is_array()) {
             req.embedding = json["embedding"].get<std::vector<float>>();
         }

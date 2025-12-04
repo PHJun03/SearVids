@@ -305,6 +305,70 @@ std::vector<float> ClipOnnx::loadAndPreprocessImage(const std::string& path) {
     return resized;
 }
 
+/**
+ * Preprocess RGB buffer (HWC format) to NCHW float tensor
+ * Input: RGB24 buffer (width * height * 3), width, height
+ * Output: Normalized NCHW float tensor (3 * image_size_ * image_size_)
+ */
+std::vector<float> ClipOnnx::preprocessRGBBuffer(const std::vector<uint8_t>& rgb_data,
+                                                  int width,
+                                                  int height) {
+    // Validate input size
+    size_t expected_size = static_cast<size_t>(width) * height * 3;
+    if (rgb_data.size() != expected_size) {
+        throw std::runtime_error("RGB buffer size mismatch: expected " + 
+                                std::to_string(expected_size) + 
+                                ", got " + std::to_string(rgb_data.size()));
+    }
+
+    // Allocate output tensor (NCHW format)
+    std::vector<float> output(3 * image_size_ * image_size_);
+
+    // Nearest-neighbor resize + normalize (same logic as loadAndPreprocessImage)
+    for (int y = 0; y < image_size_; ++y) {
+        // Map output y to input y
+        int src_y = (y * height) / image_size_;
+        if (src_y >= height) src_y = height - 1;
+
+        for (int x = 0; x < image_size_; ++x) {
+            // Map output x to input x
+            int src_x = (x * width) / image_size_;
+            if (src_x >= width) src_x = width - 1;
+
+            // Process each channel (R, G, B)
+            for (int ch = 0; ch < 3; ++ch) {
+                // Input: HWC format (row-major)
+                size_t src_idx = static_cast<size_t>(src_y * width + src_x) * 3 + ch;
+                
+                // Normalize: [0, 255] -> [0, 1] -> standardize with CLIP mean/std
+                float pixel_value = static_cast<float>(rgb_data[src_idx]) / 255.0f;
+                float normalized = (pixel_value - mean_[ch]) / std_[ch];
+
+                // Output: NCHW format (channel-major)
+                size_t dst_idx = static_cast<size_t>(ch) * image_size_ * image_size_ + 
+                                 y * image_size_ + x;
+                output[dst_idx] = normalized;
+            }
+        }
+    }
+
+    return output;
+}
+
+/**
+ * Encode image from RGB buffer (wrapper for preprocessRGBBuffer + runVisionSession)
+ */
+std::vector<float> ClipOnnx::encodeImage(const std::vector<uint8_t>& rgb_data,
+                                         int width,
+                                         int height) {
+    // 1) Preprocess RGB buffer to NCHW tensor
+    auto img_tensor = preprocessRGBBuffer(rgb_data, width, height);
+
+    // 2) Run vision session
+    std::vector<int64_t> shape = {1, 3, image_size_, image_size_};
+    return runVisionSession(img_tensor, shape);
+}
+
 /* ---------------------------
    Node name setters
    --------------------------- */

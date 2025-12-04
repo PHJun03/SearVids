@@ -31,6 +31,8 @@ struct VideoSession {
 
     int64_t duration_ms{0};
     int64_t nb_frames{0};
+    int64_t indexed_audio_segments{0};
+    int64_t indexed_visual_frames{0};
 
     std::chrono::system_clock::time_point started_at;
     std::chrono::system_clock::time_point completed_at;
@@ -43,6 +45,7 @@ struct SearchRequest {
     int topk = 5;
     int offset = 0;
     float min_similarity = 0.0f;
+    std::string search_type = "both";
 };
 
 // Search result structure
@@ -52,6 +55,7 @@ struct SearchResult {
     float end_time;
     std::string caption;
     float similarity;
+    std::string result_type;
 };
 
 // Global state (defined in .cpp)

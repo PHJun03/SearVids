@@ -9,6 +9,7 @@ extern "C" {
 #include <libavutil/opt.h>
 #include <libavutil/imgutils.h>
 #include <libavutil/channel_layout.h>
+#include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
 }
 
@@ -423,6 +424,353 @@ bool extract_audio(const std::string& video_path,
               << (total_samples / sample_rate) << " seconds" << std::endl;
 
     return true;
+}
+
+int64_t ms_to_avtime(int64_t ms, int64_t time_base_num, int64_t time_base_den) {
+    if (time_base_num == 0) return 0;
+    double t_seconds = static_cast<double>(ms) / 1000.0;
+    return static_cast<int64_t>((t_seconds * time_base_den) / time_base_num + 0.5);
+}
+
+FrameData extract_frame_at(const std::string& video_path,
+                           int64_t timestamp_ms,
+                           bool seek_backward) {
+    init_ffmpeg();
+
+    auto fmt_deleter = [](AVFormatContext* ctx) {
+        if (ctx) avformat_close_input(&ctx);
+    };
+    std::unique_ptr<AVFormatContext, decltype(fmt_deleter)> fmt_ctx(nullptr, fmt_deleter);
+    
+    try {
+        fmt_ctx.reset(open_input_format_context(video_path));
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to open video: " + std::string(e.what()));
+    }
+
+    // Find video stream
+    int video_stream_idx = av_find_best_stream(fmt_ctx.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (video_stream_idx < 0) {
+        throw std::runtime_error("No video stream found");
+    }
+
+    AVStream* video_stream = fmt_ctx->streams[video_stream_idx];
+
+    // Open video decoder
+    auto codec_deleter = [](AVCodecContext* ctx) {
+        if (ctx) avcodec_free_context(&ctx);
+    };
+    std::unique_ptr<AVCodecContext, decltype(codec_deleter)> codec_ctx(nullptr, codec_deleter);
+    
+    try {
+        codec_ctx.reset(open_decoder_for_stream(video_stream));
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to open decoder: " + std::string(e.what()));
+    }
+
+    // Seek to timestamp
+    int64_t seek_target = av_rescale_q(
+        timestamp_ms,
+        {1, 1000},  // milliseconds
+        video_stream->time_base
+    );
+
+    int seek_flags = seek_backward ? AVSEEK_FLAG_BACKWARD : 0;
+    if (av_seek_frame(fmt_ctx.get(), video_stream_idx, seek_target, seek_flags) < 0) {
+        std::cerr << "Warning: Seek failed, reading from start" << std::endl;
+    }
+
+    avcodec_flush_buffers(codec_ctx.get());
+
+    // Read frames until we get the target frame
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        if (pkt) av_packet_free(&pkt);
+        if (frame) av_frame_free(&frame);
+        throw std::runtime_error("Failed to allocate packet/frame");
+    }
+
+    FrameData result;
+    bool frame_found = false;
+    int ret = 0;
+
+    while (av_read_frame(fmt_ctx.get(), pkt) >= 0) {
+        if (pkt->stream_index == video_stream_idx) {
+            ret = avcodec_send_packet(codec_ctx.get(), pkt);
+            if (ret < 0) {
+                av_packet_unref(pkt);
+                continue;
+            }
+
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(codec_ctx.get(), frame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+                if (ret < 0) break;
+
+                // Get frame timestamp
+                int64_t frame_pts = frame->pts;
+                int64_t frame_ms = av_rescale_q(
+                    frame_pts,
+                    video_stream->time_base,
+                    {1, 1000}
+                );
+
+                // Check if this is the frame we want
+                if (frame_ms >= timestamp_ms || !seek_backward) {
+                    // Convert to RGB24 using swscale
+                    SwsContext* sws_ctx = sws_getContext(
+                        frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
+                        frame->width, frame->height, AV_PIX_FMT_RGB24,
+                        SWS_BILINEAR, nullptr, nullptr, nullptr
+                    );
+
+                    if (!sws_ctx) {
+                        av_frame_unref(frame);
+                        throw std::runtime_error("Failed to create SwsContext");
+                    }
+
+                    // Allocate RGB buffer
+                    int rgb_size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, frame->width, frame->height, 1);
+                    result.rgb_data.resize(rgb_size);
+
+                    uint8_t* rgb_ptrs[4] = {result.rgb_data.data(), nullptr, nullptr, nullptr};
+                    int rgb_linesizes[4] = {frame->width * 3, 0, 0, 0};
+
+                    // Convert frame to RGB24
+                    sws_scale(
+                        sws_ctx,
+                        frame->data, frame->linesize,
+                        0, frame->height,
+                        rgb_ptrs, rgb_linesizes
+                    );
+
+                    sws_freeContext(sws_ctx);
+
+                    result.width = frame->width;
+                    result.height = frame->height;
+                    result.timestamp_ms = frame_ms;
+
+                    frame_found = true;
+                    av_frame_unref(frame);
+                    break;
+                }
+
+                av_frame_unref(frame);
+            }
+
+            if (frame_found) break;
+        }
+        av_packet_unref(pkt);
+    }
+
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+
+    if (!frame_found) {
+        throw std::runtime_error("Failed to extract frame at timestamp " + std::to_string(timestamp_ms) + "ms");
+    }
+
+    return result;
+}
+
+std::vector<FrameData> extract_frames(const std::string& video_path,
+                                      double interval_seconds,
+                                      int max_frames,
+                                      int64_t start_time_ms,
+                                      int64_t end_time_ms) {
+    init_ffmpeg();
+
+    // Get video info first
+    VideoInfo info = probe(video_path);
+    if (!info.has_video) {
+        throw std::runtime_error("No video stream found in: " + video_path);
+    }
+
+    // Determine time range
+    int64_t video_duration_ms = info.duration_ms;
+    if (end_time_ms == 0 || end_time_ms > video_duration_ms) {
+        end_time_ms = video_duration_ms;
+    }
+
+    if (start_time_ms >= end_time_ms) {
+        throw std::runtime_error("Invalid time range: start >= end");
+    }
+
+    // Calculate frame timestamps
+    std::vector<int64_t> timestamps;
+    int64_t interval_ms = static_cast<int64_t>(interval_seconds * 1000.0);
+    
+    for (int64_t t = start_time_ms; t < end_time_ms; t += interval_ms) {
+        timestamps.push_back(t);
+        if (max_frames > 0 && timestamps.size() >= static_cast<size_t>(max_frames)) {
+            break;
+        }
+    }
+
+    std::cout << "Extracting " << timestamps.size() << " frames from " 
+              << video_path << " (interval: " << interval_seconds << "s)" << std::endl;
+
+    // Open format context
+    auto fmt_deleter = [](AVFormatContext* ctx) {
+        if (ctx) avformat_close_input(&ctx);
+    };
+    std::unique_ptr<AVFormatContext, decltype(fmt_deleter)> fmt_ctx(nullptr, fmt_deleter);
+    
+    try {
+        fmt_ctx.reset(open_input_format_context(video_path));
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to open video: " + std::string(e.what()));
+    }
+
+    // Find video stream
+    int video_stream_idx = av_find_best_stream(fmt_ctx.get(), AVMEDIA_TYPE_VIDEO, -1, -1, nullptr, 0);
+    if (video_stream_idx < 0) {
+        throw std::runtime_error("No video stream found");
+    }
+
+    AVStream* video_stream = fmt_ctx->streams[video_stream_idx];
+
+    // Open decoder
+    auto codec_deleter = [](AVCodecContext* ctx) {
+        if (ctx) avcodec_free_context(&ctx);
+    };
+    std::unique_ptr<AVCodecContext, decltype(codec_deleter)> codec_ctx(nullptr, codec_deleter);
+    
+    try {
+        codec_ctx.reset(open_decoder_for_stream(video_stream));
+    } catch (const std::exception& e) {
+        throw std::runtime_error("Failed to open decoder: " + std::string(e.what()));
+    }
+
+    // Setup SwsContext for RGB conversion
+    SwsContext* sws_ctx = sws_getContext(
+        codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
+        codec_ctx->width, codec_ctx->height, AV_PIX_FMT_RGB24,
+        SWS_BILINEAR, nullptr, nullptr, nullptr
+    );
+
+    if (!sws_ctx) {
+        throw std::runtime_error("Failed to create SwsContext");
+    }
+
+    // Extract frames
+    std::vector<FrameData> results;
+    results.reserve(timestamps.size());
+
+    AVPacket* pkt = av_packet_alloc();
+    AVFrame* frame = av_frame_alloc();
+    if (!pkt || !frame) {
+        if (pkt) av_packet_free(&pkt);
+        if (frame) av_frame_free(&frame);
+        sws_freeContext(sws_ctx);
+        throw std::runtime_error("Failed to allocate packet/frame");
+    }
+
+    size_t current_target_idx = 0;
+    int ret = 0;
+
+    while (av_read_frame(fmt_ctx.get(), pkt) >= 0 && current_target_idx < timestamps.size()) {
+        if (pkt->stream_index == video_stream_idx) {
+            ret = avcodec_send_packet(codec_ctx.get(), pkt);
+            if (ret < 0) {
+                av_packet_unref(pkt);
+                continue;
+            }
+
+            while (ret >= 0) {
+                ret = avcodec_receive_frame(codec_ctx.get(), frame);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) break;
+                if (ret < 0) break;
+
+                // Get frame timestamp
+                int64_t frame_pts = frame->pts;
+                int64_t frame_ms = av_rescale_q(
+                    frame_pts,
+                    video_stream->time_base,
+                    {1, 1000}
+                );
+
+                // Check if this frame matches our target timestamp
+                while (current_target_idx < timestamps.size() && 
+                       frame_ms >= timestamps[current_target_idx]) {
+                    
+                    // Convert to RGB24
+                    int rgb_size = av_image_get_buffer_size(
+                        AV_PIX_FMT_RGB24, 
+                        frame->width, 
+                        frame->height, 
+                        1
+                    );
+
+                    FrameData frame_data;
+                    frame_data.rgb_data.resize(rgb_size);
+                    frame_data.width = frame->width;
+                    frame_data.height = frame->height;
+                    frame_data.timestamp_ms = frame_ms;
+
+                    uint8_t* rgb_ptrs[4] = {frame_data.rgb_data.data(), nullptr, nullptr, nullptr};
+                    int rgb_linesizes[4] = {frame->width * 3, 0, 0, 0};
+
+                    sws_scale(
+                        sws_ctx,
+                        frame->data, frame->linesize,
+                        0, frame->height,
+                        rgb_ptrs, rgb_linesizes
+                    );
+
+                    results.push_back(std::move(frame_data));
+                    
+                    std::cout << "Extracted frame " << results.size() << "/" 
+                              << timestamps.size() << " at " << frame_ms << "ms" << std::endl;
+
+                    current_target_idx++;
+                    
+                    // If we've collected all frames, break
+                    if (current_target_idx >= timestamps.size()) {
+                        break;
+                    }
+                }
+
+                av_frame_unref(frame);
+            }
+        }
+        av_packet_unref(pkt);
+    }
+
+    // Cleanup
+    av_frame_free(&frame);
+    av_packet_free(&pkt);
+    sws_freeContext(sws_ctx);
+
+    std::cout << "Successfully extracted " << results.size() << " frames" << std::endl;
+
+    return results;
+}
+
+FFmpegVersion get_ffmpeg_version() {
+    FFmpegVersion version;
+    
+    unsigned int avformat_ver = avformat_version();
+    unsigned int avcodec_ver = avcodec_version();
+    unsigned int avutil_ver = avutil_version();
+    unsigned int swresample_ver = swresample_version();
+    unsigned int swscale_ver = swscale_version();
+    
+    auto format_version = [](unsigned int ver) -> std::string {
+        int major = (ver >> 16) & 0xFF;
+        int minor = (ver >> 8) & 0xFF;
+        int micro = ver & 0xFF;
+        return std::to_string(major) + "." + std::to_string(minor) + "." + std::to_string(micro);
+    };
+    
+    version.avformat_version = format_version(avformat_ver);
+    version.avcodec_version = format_version(avcodec_ver);
+    version.avutil_version = format_version(avutil_ver);
+    version.swresample_version = format_version(swresample_ver);
+    version.swscale_version = format_version(swscale_ver);
+    
+    return version;
 }
 
 } // namespace ffmpeg_decoder

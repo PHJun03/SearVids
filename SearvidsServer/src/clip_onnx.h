@@ -31,6 +31,11 @@ public:
     // Encode image -> embedding
     std::vector<float> encodeImageFromFile(const std::string& image_path);
 
+    // Encode image from RGB buffer -> embedding
+    std::vector<float> encodeImage(const std::vector<uint8_t>& rgb_data, 
+                                    int width, 
+                                    int height);
+
     // Cosine similarity utility
     static float cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b);
 
@@ -52,6 +57,11 @@ private:
     std::vector<float> l2Normalize(const std::vector<float>& v);
     std::vector<int64_t> naiveTokenize(const std::string& text, size_t max_tokens = 64);
     std::vector<float> loadAndPreprocessImage(const std::string& path);
+
+    // Preprocess RGB buffer
+    std::vector<float> preprocessRGBBuffer(const std::vector<uint8_t>& rgb_data,
+                                            int width,
+                                            int height);
 
 private:
     Ort::Env env_;
