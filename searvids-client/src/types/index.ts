@@ -40,3 +40,16 @@ export interface PaginatedResponse<T> {
   pageSize: number;
   totalPages: number;
 }
+
+export interface VideoChapter {
+  id: string;
+  timestamp: number; // sec deg.
+  thumbnailUrl: string;
+  description: string;
+  score?: number;
+}
+
+export interface AnalyzeRequest {
+  url: string;
+  query: string;
+}

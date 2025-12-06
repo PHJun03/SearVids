@@ -1,5 +1,5 @@
 import axios from 'axios';
-import type { VideoWithTags, VideoTag, SearchParams, PaginatedResponse } from '../types';
+import type { VideoWithTags, VideoTag, SearchParams, PaginatedResponse, VideoChapter, AnalyzeRequest } from '../types';
 
 const API_BASE_URL = 'http://localhost:5000/api';
 
@@ -31,6 +31,11 @@ export const videoApi = {
 
   getAllTags: async () => {
     const response = await api.get<VideoTag[]>('/tags');
+    return response.data;
+  },
+
+  analyzeVideo: async (params: AnalyzeRequest) => {
+    const response = await api.post<VideoChapter[]>('/analyze', params);
     return response.data;
   },
 };
