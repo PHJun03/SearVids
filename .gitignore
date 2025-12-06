@@ -1,6 +1,37 @@
-# Ignore some ONNX model files beacause they are large binary files
+# =============================
+# SearvidsServer
+# =============================
+# ONNX model files
 *.onnx
 *.onnx.data
 SearvidsServer/third_party/onnxruntime/lib/onnxruntime.pdb
 SearvidsServer/third_party/onnxruntime/lib/onnxruntime_providers_cuda.dll
 SearvidsServer/third_party/onnxruntime/lib/onnxruntime_providers_cuda.pdb
+
+# =============================
+# searvids-client
+# =============================
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+lerna-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
