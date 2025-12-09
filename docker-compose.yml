@@ -1,0 +1,23 @@
+services:
+  backend:
+    build: ./SearvidsServer
+    container_name: searvids-backend
+    ports:
+      - "8080:8080"
+    volumes:
+      # Mount local folder containing model files into the container
+      - ./models:/app/models
+      # Downloaded video storage
+      - ./data:/app/data
+    environment:
+      - MODEL_PATH=/app/models
+    restart: always
+
+  frontend:
+    build: ./searvids-client
+    container_name: searvids-frontend
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always

@@ -24,8 +24,8 @@ static clip_onnx::ClipOnnx& get_clip() {
     std::lock_guard<std::mutex> lock(g_clip_mtx);
     if (!g_clip_ptr) {
         g_clip_ptr = std::make_unique<clip_onnx::ClipOnnx>(
-            "models/onnx/clip_text_sim.onnx",
-            "models/onnx/clip_vision_sim.onnx",
+            "../models/clip_text_sim.onnx",
+            "../models/clip_vision_sim.onnx",
             false,  // CPU
             224     // image size
         );
@@ -192,7 +192,7 @@ void analyze_video_async(VideoSession& sess) {
                 const char* envModel = std::getenv("WHISPER_MODEL_PATH");
                 std::string modelPath = envModel
                     ? std::string(envModel)
-                    : std::string("models/whisper/ggml-tiny.en.bin");
+                    : std::string("../models/ggml-tiny.en.bin");
 
                 std::filesystem::create_directories("data");
                 std::string outTxt = std::string("data/") + sess.video_id + ".txt";
@@ -388,8 +388,10 @@ void setup_routes(crow::SimpleApp& app) {
         return json_ok(nlohmann::json{{"status","success"},{"count",0},{"results",nlohmann::json::array()}});
     });
 
-    // GET /health
-    CROW_ROUTE(app, "/health")([]() { return health_check(); });
+    // GET /api/health
+    CROW_ROUTE(app, "/api/health").methods("GET"_method)([] {
+        return crow::response(200, "OK");
+    });
 
     // CORS preflight
     CROW_ROUTE(app, "/<path>").methods(crow::HTTPMethod::OPTIONS)

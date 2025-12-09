@@ -6,6 +6,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <fstream>
+#include <thread>
+#include <chrono>
 
 #if defined(_WIN32)
     #define NOMINMAX

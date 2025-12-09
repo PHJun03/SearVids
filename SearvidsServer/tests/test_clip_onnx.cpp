@@ -8,8 +8,8 @@ using clip_onnx::ClipOnnx;
 
 namespace fs = std::filesystem;
 
-static const fs::path TEXT_MODEL  = "../models/onnx/clip_text_sim.onnx";
-static const fs::path VISION_MODEL = "../models/onnx/clip_vision_sim.onnx";
+static const fs::path TEXT_MODEL  = "../../models/clip_text_sim.onnx";
+static const fs::path VISION_MODEL = "../../models/clip_vision_sim.onnx";
 static const fs::path TEST_IMAGE = "assets/test.jpg";   // test image (optional)
 
 class ClipOnnxCpuTest : public ::testing::Test {

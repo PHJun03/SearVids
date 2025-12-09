@@ -249,6 +249,7 @@ bool extract_audio(const std::string& video_path,
         return false;
     }
 
+    // ...existing code...
     // 4) Setup SwrContext for resampling
     SwrContext* swr_ctx = swr_alloc();
     if (!swr_ctx) {
@@ -256,18 +257,30 @@ bool extract_audio(const std::string& video_path,
         return false;
     }
 
-    AVChannelLayout in_ch_layout = codec_ctx->ch_layout;
-    AVChannelLayout out_ch_layout;
-    av_channel_layout_default(&out_ch_layout, channels);
+    #if LIBAVUTIL_VERSION_MAJOR >= 57
+        AVChannelLayout in_ch_layout = codec_ctx->ch_layout;
+        AVChannelLayout out_ch_layout;
+        av_channel_layout_default(&out_ch_layout, channels);
 
-    // Set input parameters
-    av_opt_set_chlayout(swr_ctx, "in_chlayout", &in_ch_layout, 0);
-    av_opt_set_int(swr_ctx, "in_sample_rate", codec_ctx->sample_rate, 0);
-    av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
+        av_opt_set_chlayout(swr_ctx, "in_chlayout",  &in_ch_layout,  0);
+        av_opt_set_int      (swr_ctx, "in_sample_rate",  codec_ctx->sample_rate, 0);
+        av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt",  codec_ctx->sample_fmt,  0);
 
-    // Output format (16kHz mono for Whisper)
-    int64_t out_channel_layout = (channels == 1) ? AV_CH_LAYOUT_MONO : AV_CH_LAYOUT_STEREO;
-    av_opt_set_int(swr_ctx, "out_channel_layout", out_channel_layout, 0);
+        av_opt_set_chlayout(swr_ctx, "out_chlayout", &out_ch_layout, 0);
+    #else
+        // FFmpeg < 5 compatibility (uses uint64 channel_layout)
+        uint64_t in_ch_layout = codec_ctx->channel_layout
+            ? codec_ctx->channel_layout
+            : av_get_default_channel_layout(codec_ctx->channels);
+        uint64_t out_ch_layout = (channels == 1) ? AV_CH_LAYOUT_MONO : AV_CH_LAYOUT_STEREO;
+
+        av_opt_set_int(swr_ctx, "in_channel_layout",  in_ch_layout,  0);
+        av_opt_set_int(swr_ctx, "in_sample_rate",     codec_ctx->sample_rate, 0);
+        av_opt_set_sample_fmt(swr_ctx, "in_sample_fmt", codec_ctx->sample_fmt, 0);
+
+        av_opt_set_int(swr_ctx, "out_channel_layout", out_ch_layout, 0);
+    #endif
+
     av_opt_set_int(swr_ctx, "out_sample_rate", sample_rate, 0);
     av_opt_set_sample_fmt(swr_ctx, "out_sample_fmt", AV_SAMPLE_FMT_S16, 0);  // 16-bit PCM
 

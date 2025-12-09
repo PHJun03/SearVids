@@ -4,7 +4,16 @@
 #include <vector>
 #include <memory>
 
+#ifdef __INTELLISENSE__
+namespace Ort {
+class Env {};
+class SessionOptions {};
+class AllocatorWithDefaultOptions {};
+class Session;
+}
+#else
 #include <onnxruntime_cxx_api.h>
+#endif
 
 namespace clip_onnx {
 
