@@ -3,6 +3,7 @@
 # =============================
 # ONNX model files
 *.onnx
+*.onnx.data
 
 # =============================
 # searvids-client
