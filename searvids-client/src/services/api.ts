@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+ * All rights reserved.
+ */
+
 import axios from 'axios';
 import type { VideoWithTags, VideoTag, SearchParams, PaginatedResponse, AnalyzeRequest } from '../types';
 

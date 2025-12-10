@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+ * All rights reserved.
+ */
+
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 import ReactPlayer from 'react-player';

@@ -1,3 +1,6 @@
+# Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+# All rights reserved.
+
 # ============================================================
 # CMakeLists for SearvidsServer
 # ============================================================

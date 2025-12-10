@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+ * All rights reserved.
+ */
+
 export interface VideoMetadata {
   id: number;
   title: string;

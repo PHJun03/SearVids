@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+ * All rights reserved.
+ */
+
 import js from '@eslint/js'
 import globals from 'globals'
 import reactHooks from 'eslint-plugin-react-hooks'

@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+ * All rights reserved.
+ */
+
 #include "hnsw_index.h"
 #include <hnswlib.h>
 #include <mutex>

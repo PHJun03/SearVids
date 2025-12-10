@@ -1,3 +1,8 @@
+/*
+ * Copyright (c) 2025 Hyeonjun Park (phjun7150@gmail.com)
+ * All rights reserved.
+ */
+
 import { Link } from 'react-router-dom';
 import { Play } from 'lucide-react';
 import { videoApi } from '../../services/api';
