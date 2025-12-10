@@ -32,19 +32,29 @@ public:
 
     std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5) {
         std::lock_guard<std::mutex> lock(mutex_);
-        auto result = index_->searchKnn(query.data(), topk);
+        if (entries_.empty()) return {};
+
+        size_t k = std::min(topk, entries_.size());
+        auto result = index_->searchKnn(query.data(), k);
         std::vector<TimelineEntry> out;
         while (!result.empty()) {
             int id = result.top().second;
+            float dist = result.top().first;
             result.pop();
             // find the entry by id
             for (const auto& e : entries_) {
                 if (e.id == id) {
-                    out.push_back(e);
+                    TimelineEntry res = e;
+                    // hnswlib InnerProduct distance is 1.0 - dot_product (if normalized)
+                    // We want similarity (dot product), so 1.0 - dist
+                    res.similarity = 1.0f - dist;
+                    out.push_back(res);
                     break;
                 }
             }
         }
+        // Result is from worst to best (priority queue max heap), so reverse it
+        std::reverse(out.begin(), out.end());
         return out;
     }
 

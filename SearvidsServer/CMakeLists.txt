@@ -15,6 +15,7 @@ set(SOURCES
 )
 
 add_executable(SearvidsServer ${SOURCES})
+add_dependencies(SearvidsServer whisper-cli)
 
 target_include_directories(SearvidsServer PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
@@ -42,6 +43,7 @@ target_link_libraries(ffmpeg_decoder PRIVATE ${FFMPEG_LIBRARIES})
 
 # ========== Add Whisper ==========
 # whisper.cpp
+set(WHISPER_BUILD_EXAMPLES ON CACHE BOOL "" FORCE)
 add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
 
 add_library(whisper_wrapper STATIC

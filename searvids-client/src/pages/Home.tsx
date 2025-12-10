@@ -1,22 +1,47 @@
-import { useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
-import { Search, Video, Clock, ArrowRight } from 'lucide-react';
-import { videoApi } from '../services/api';
+import { useState, useEffect } from 'react';
+import { useMutation, useQuery } from '@tanstack/react-query';
+import { Search, Video, ArrowRight } from 'lucide-react';
+import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Loading from '../components/common/Loading';
 import Error from '../components/common/Error';
 
 export default function Home() {
   const [url, setUrl] = useState('');
-  const [topic, setTopic] = useState('');
+  const [keyword, setKeyword] = useState('');
+  const [videoId, setVideoId] = useState<string | null>(null);
 
-  const { mutate, isPending, error, data: chapters } = useMutation({
+  // start analyze
+  const {
+    mutate,
+    isPending,
+    error: analyzeError,
+  } = useMutation<AnalyzeResponse, Error, { url: string; query: string }>({
     mutationFn: videoApi.analyzeVideo,
+    onSuccess: (resp) => setVideoId(resp.video_id),
+  });
+
+  // poll status
+  const {
+    data: analyzeStatus,
+    isFetching: isPolling,
+    error: statusError,
+  } = useQuery<AnalyzeStatus>({
+    queryKey: ['analyze-status', videoId],
+    queryFn: () => videoApi.getAnalyzeStatus(videoId as string),
+    enabled: !!videoId,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data) return 2000;
+      return data.status === 'done' || data.status === 'error' ? false : 2000;
+    },
   });
 
   const handleAnalyze = (e: React.FormEvent) => {
     e.preventDefault();
-    if (url && topic) {
-      mutate({ url, query: topic });
+    if (url && keyword) {
+      setVideoId(null);
+      searchMutation.reset();
+      mutate({ url, query: keyword });
     }
   };
 
@@ -26,17 +51,84 @@ export default function Home() {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
+  const renderStatus = () => {
+    if (!videoId) return null;
+    if (statusError) return <Error message="Failed to fetch status." />;
+    if (!analyzeStatus) return <p className="text-blue-200">Waiting for status...</p>;
+    return (
+      <div className="text-center py-4 space-y-2">
+        <p className="text-lg font-semibold">
+          Status: <span className="text-emerald-300">{analyzeStatus.status}</span>
+        </p>
+        {analyzeStatus.current_stage && (
+          <p className="text-sm text-gray-300">Stage: {analyzeStatus.current_stage}</p>
+        )}
+        <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden max-w-md mx-auto">
+          <div
+            className="bg-blue-500 h-2 transition-all"
+            style={{ width: `${Math.min(100, analyzeStatus.progress_percent)}%` }}
+          />
+        </div>
+        {analyzeStatus.status === 'done' && (
+          <p className="text-emerald-300 text-sm">Analysis completed.</p>
+        )}
+        {analyzeStatus.status === 'error' && (
+          <p className="text-red-300 text-sm">Error: {analyzeStatus.error}</p>
+        )}
+      </div>
+    );
+  };
+
+  // chapters search
+  const searchMutation = useMutation<SearchResponse, Error, { query: string }>({
+    mutationFn: ({ query }) => videoApi.searchChapters(query),
+  });
+
+  // trigger search when analysis done
+  useEffect(() => {
+    if (analyzeStatus?.status === 'done' && keyword && !searchMutation.isPending && !searchMutation.isSuccess) {
+      searchMutation.mutate({ query: keyword });
+    }
+  }, [analyzeStatus?.status, keyword, searchMutation.isPending, searchMutation.isSuccess]);
+
+  const renderChapters = () => {
+    if (searchMutation.isPending) return <p className="text-blue-200">Searching chapters...</p>;
+    if (searchMutation.error) return <Error message="Failed to load chapters." />;
+    const results = searchMutation.data?.results ?? [];
+    if (!results.length) return null;
+    return (
+      <div className="w-full max-w-2xl space-y-4">
+        {results.map((r) => (
+          <div key={`${r.id}-${r.start_time}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
+            <img
+              className="w-32 h-20 object-cover rounded"
+              src={videoApi.getThumbnailUrl(r.id)}
+              alt="thumbnail"
+            />
+            <div className="flex-1">
+              <p className="text-sm text-emerald-200">
+                {formatTime(r.start_time)} - {formatTime(r.end_time)}
+              </p>
+              <p className="text-base font-semibold text-white line-clamp-2">{r.caption || 'No caption'}</p>
+              <p className="text-xs text-gray-400">score: {r.similarity.toFixed(3)}</p>
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 text-white flex items-center justify-center">
       <div className="max-w-4xl w-full mx-auto px-4 py-20 flex flex-col items-center">
-        
+
         {/* Header Section */}
         <div className="flex flex-col items-center text-center mb-16 mx-auto">
           <h1 className="text-6xl font-extrabold mb-6 tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
             Searvids
           </h1>
           <p className="text-xl text-gray-300 font-light">
-            Search in a video, generate video chapters about the topic you searched.
+            Search in a video, generate video chapters about the keyword.
           </p>
         </div>
 
@@ -57,7 +149,7 @@ export default function Home() {
               />
             </div>
 
-            {/* Topic Input & Button */}
+            {/* Keyword Input & Button */}
             <div className="flex gap-4 flex-col md:flex-row md:items-center md:justify-center">
               <div className="relative flex-1 md:max-w-md w-full">
                 <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
@@ -65,15 +157,15 @@ export default function Home() {
                 </div>
                 <input
                   type="text"
-                  value={topic}
-                  onChange={(e) => setTopic(e.target.value)}
-                  placeholder="Search Topic..."
+                  value={keyword}
+                  onChange={(e) => setKeyword(e.target.value)}
+                  placeholder="Search Keyword..."
                   className="w-full pl-12 pr-12 py-4 bg-gray-800/50 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400 transition-all text-center"
                 />
               </div>
               <button
                 type="submit"
-                disabled={isPending || !url || !topic}
+                disabled={isPending || !url || !keyword}
                 className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-8 py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-blue-500/30 w-full md:w-auto"
               >
                 {isPending ? 'Analyzing...' : 'Generate Chapters'}
@@ -83,60 +175,21 @@ export default function Home() {
           </form>
         </div>
 
-        {/* Results Section */}
+       {/* Results / Status Section */}
         <div className="space-y-6 w-full max-w-2xl mx-auto flex flex-col items-center">
-          {isPending && (
+          {(isPending || isPolling) && (
             <div className="text-center py-12">
               <Loading />
               <p className="mt-4 text-blue-200 animate-pulse">Analyzing video content...</p>
             </div>
           )}
-
-          {error && (
+          {analyzeError && (
             <div className="text-center w-full">
-              <Error message="Failed to generate video chapters. Please check the URL and try again." />
+              <Error message="Failed to start analysis. Please check the URL and try again." />
             </div>
           )}
-
-          {chapters && chapters.length > 0 && (
-            <div className="animate-fade-in-up w-full">
-              <h2 className="text-2xl font-bold mb-6 flex items-center justify-center gap-2">
-                <Clock className="text-emerald-400" />
-                Generated Chapters
-              </h2>
-              <div className="grid gap-4">
-                {chapters.map((chapter) => (
-                  <div
-                    key={chapter.id}
-                    className="bg-gray-800/80 hover:bg-gray-700/80 border border-gray-700 rounded-xl p-4 flex gap-4 transition-all cursor-pointer group"
-                    onClick={() => window.open(`${url}&t=${chapter.timestamp}s`, '_blank')}
-                  >
-                    {/* Thumbnail */}
-                    <div className="relative w-40 h-24 flex-shrink-0 rounded-lg overflow-hidden bg-black mx-auto md:mx-0">
-                      <img
-                        src={chapter.thumbnailUrl}
-                        alt={`Chapter at ${formatTime(chapter.timestamp)}`}
-                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                      />
-                      <div className="absolute bottom-1 right-1 bg-black/80 text-white text-xs px-1.5 py-0.5 rounded">
-                        {formatTime(chapter.timestamp)}
-                      </div>
-                    </div>
-
-                    {/* Content */}
-                    <div className="flex-1 flex flex-col justify-center">
-                      <h3 className="text-lg font-semibold text-blue-300 mb-1 group-hover:text-blue-200">
-                        {formatTime(chapter.timestamp)} - {chapter.description}
-                      </h3>
-                      <p className="text-gray-400 text-sm line-clamp-2">
-                        Click to watch this segment in the video.
-                      </p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
+          {renderStatus()}
+          {renderChapters()}
         </div>
       </div>
     </div>

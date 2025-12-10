@@ -78,13 +78,9 @@ std::vector<std::string> WhisperWrapper::buildCommand(const std::string& infile)
     std::vector<std::string> out;
     out.push_back(cliExe);
 
-    // Quote infile for spaces/Korean paths
-    std::string quotedInfile;
-#if defined(_WIN32)
-    quotedInfile = "\"" + infile + "\"";
-#else
-    quotedInfile = "\"" + infile + "\"";
-#endif
+    // Do not quote infile. The vector-based argument passing (execvp) handles spaces correctly.
+    // Quoting here would result in literal quotes in the filename, which causes open() to fail.
+    std::string quotedInfile = infile;
 
     std::istringstream iss(argsTemplate);
     std::string tok;

@@ -9,6 +9,7 @@
                 "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp/ggml/include",
                 "${workspaceFolder}/SearvidsServer/third_party/hnswlib",
                 "${workspaceFolder}/SearvidsServer/third_party/hnswlib/hnswlib",
+                "${workspaceFolder}/SearvidsServer/third_party/onnxruntime_include",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include/crow",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include/nlohmann"

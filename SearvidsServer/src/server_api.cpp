@@ -24,10 +24,10 @@ static clip_onnx::ClipOnnx& get_clip() {
     std::lock_guard<std::mutex> lock(g_clip_mtx);
     if (!g_clip_ptr) {
         g_clip_ptr = std::make_unique<clip_onnx::ClipOnnx>(
-            "../models/clip_text_sim.onnx",
-            "../models/clip_vision_sim.onnx",
-            false,  // CPU
-            224     // image size
+            "/app/models/clip_text_sim.onnx",
+            "/app/models/clip_vision_sim.onnx",
+            false,          // device_gpu
+            224             // image size
         );
     }
     return *g_clip_ptr;
@@ -41,7 +41,9 @@ static crow::response json_ok(const nlohmann::json& j, int code = 200) {
     return res;
 }
 static crow::response json_err(int code, const std::string& msg) {
-    nlohmann::json j{{"status","error"},{"message",msg}};
+    nlohmann::json j = nlohmann::json::object();
+    j["status"] = "error";
+    j["message"] = msg;
     return json_ok(j, code);
 }
 
@@ -187,38 +189,43 @@ void analyze_video_async(VideoSession& sess) {
             try {
                 std::cout << "[" << sess.video_id << "] Starting transcription..." << std::endl;
                 
-                g_whisper.setCliExecutable("whisper-cli.exe");
+                // Try to find whisper-cli in the build directory first
+                std::string whisperPath = "SearvidsServer/third_party/whisper.cpp/build/bin/Release/whisper-cli.exe";
+                if (!std::filesystem::exists(whisperPath)) {
+                    if (std::filesystem::exists("/app/whisper-cli")) {
+                        whisperPath = "/app/whisper-cli";
+                    } else {
+                        whisperPath = "whisper-cli.exe";
+                    }
+                }
+                g_whisper.setCliExecutable(whisperPath);
 
                 const char* envModel = std::getenv("WHISPER_MODEL_PATH");
                 std::string modelPath = envModel
                     ? std::string(envModel)
-                    : std::string("../models/ggml-tiny.en.bin");
+                    : std::string("/app/models/ggml-tiny.en.bin");
 
                 std::filesystem::create_directories("data");
-                std::string outTxt = std::string("data/") + sess.video_id + ".txt";
-
+                
+                // Use stdout capture instead of file output
+                // -nt: no timestamps (just text)
+                // -np: no prints (only results)
+                // Remove --task as it is not supported by this version of whisper-cli
                 g_whisper.setCliArgsTemplate(
-                    std::string("--task transcribe -m ") + modelPath +
-                    " --output-txt -of \"" + outTxt + "\" {infile}"
+                    std::string("-m ") + modelPath +
+                    " -nt -np {infile}"
                 );
 
+                // Run whisper and capture stdout
                 transcript = g_whisper.transcribe_from_file(audio_path, 600);
 
-                if (transcript.empty()) {
-                    std::ifstream fin(outTxt);
-                    if (fin) {
-                        std::ostringstream ss;
-                        ss << fin.rdbuf();
-                        transcript = ss.str();
-                    }
-                }
+                // Simple cleanup of transcript (remove potential system logs if they appear in stdout)
+                // whisper.cpp usually prints system info to stderr, so stdout should be mostly text.
                 
-                if (std::filesystem::exists(outTxt)) {
-                    std::error_code ec;
-                    auto sz = std::filesystem::file_size(outTxt, ec);
-                    if (!ec && sz == 0) {
-                        std::filesystem::remove(outTxt, ec);
-                    }
+                std::cout << "[" << sess.video_id << "] Transcription complete: " 
+                          << transcript.length() << " characters" << std::endl;
+                if (!transcript.empty()) {
+                     std::cout << "[" << sess.video_id << "] Transcript preview: " << transcript.substr(0, 50) << "..." << std::endl;
                 }
 
                 std::cout << "[" << sess.video_id << "] Transcription complete: " 
@@ -321,7 +328,74 @@ void setup_routes(crow::SimpleApp& app) {
                 }).detach();
             }
         }
-        return json_ok(nlohmann::json{{"status","accepted"},{"video_id",vid}}, 202);
+        nlohmann::json resp = nlohmann::json::object();
+        resp["status"] = "accepted";
+        resp["video_id"] = vid;
+        return json_ok(resp, 202);
+    });
+
+    // POST /api/analyze (alias of /videos/analyze)
+    CROW_ROUTE(app, "/api/analyze").methods(crow::HTTPMethod::POST)
+    ([](const crow::request& req) {
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { body = nlohmann::json::object(); }
+        std::string url = body.value("url", "");
+        if (url.empty()) return json_err(400, "url is required");
+
+        auto vid = make_video_id(url);
+        {
+            std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            auto& sess = g_sessions[vid];
+            if (sess.video_id.empty()) {
+                sess.video_id = vid;
+                sess.source_url = url;
+                std::thread([video_id = sess.video_id]() {
+                    VideoSession* psess = nullptr;
+                    {
+                        std::lock_guard<std::mutex> lk2(g_sessions_mtx);
+                        auto it = g_sessions.find(video_id);
+                        if (it != g_sessions.end()) psess = &it->second;
+                    }
+                    if (psess) analyze_video_async(*psess);
+                }).detach();
+            }
+        }
+        nlohmann::json resp = nlohmann::json::object();
+        resp["status"] = "accepted";
+        resp["video_id"] = vid;
+        return json_ok(resp, 202);
+    });
+
+    // POST /analyze (for proxy_pass that strips /api/)
+    CROW_ROUTE(app, "/analyze").methods(crow::HTTPMethod::POST)
+    ([](const crow::request& req) {
+        // same with /api/analyze
+        nlohmann::json body;
+        try { body = nlohmann::json::parse(req.body); } catch (...) { body = nlohmann::json::object(); }
+        std::string url = body.value("url", "");
+        if (url.empty()) return json_err(400, "url is required");
+        auto vid = make_video_id(url);
+        {
+            std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            auto& sess = g_sessions[vid];
+            if (sess.video_id.empty()) {
+                sess.video_id = vid;
+                sess.source_url = url;
+                std::thread([video_id = sess.video_id]() {
+                    VideoSession* psess = nullptr;
+                    {
+                        std::lock_guard<std::mutex> lk2(g_sessions_mtx);
+                        auto it = g_sessions.find(video_id);
+                        if (it != g_sessions.end()) psess = &it->second;
+                    }
+                    if (psess) analyze_video_async(*psess);
+                }).detach();
+            }
+        }
+        nlohmann::json resp = nlohmann::json::object();
+        resp["status"] = "accepted";
+        resp["video_id"] = vid;
+        return json_ok(resp, 202);
     });
 
     // GET /videos/{video_id}/status
@@ -335,12 +409,43 @@ void setup_routes(crow::SimpleApp& app) {
         std::string status = s.error.empty()
             ? (s.done ? "done" : (s.analyzing ? "analyzing" : "pending"))
             : "error";
-        return json_ok(nlohmann::json{
-            {"status", status},
-            {"error", s.error},
-            {"duration_ms", s.duration_ms},
-            {"nb_frames", s.nb_frames}
-        });
+        nlohmann::json j = nlohmann::json::object();
+        j["status"] = status;
+        j["error"] = s.error;
+        j["analyzing"] = static_cast<bool>(s.analyzing);
+        j["done"] = static_cast<bool>(s.done);
+        j["progress_percent"] = static_cast<int>(s.progress_percent);
+        j["current_stage"] = s.current_stage;
+        j["duration_ms"] = static_cast<int64_t>(s.duration_ms);
+        j["nb_frames"] = static_cast<int64_t>(s.nb_frames);
+        j["indexed_visual_frames"] = static_cast<int64_t>(s.indexed_visual_frames);
+        j["indexed_audio_segments"] = static_cast<int64_t>(s.indexed_audio_segments);
+        return json_ok(j);
+    });
+
+    // Alias for proxy: GET /api/videos/{video_id}/status
+    CROW_ROUTE(app, "/api/videos/<string>/status").methods(crow::HTTPMethod::GET)
+    ([](const std::string& video_id) {
+        std::lock_guard<std::mutex> lk(g_sessions_mtx);
+        auto it = g_sessions.find(video_id);
+        if (it == g_sessions.end()) return json_err(404, "not found");
+
+        const auto& s = it->second;
+        std::string status = s.error.empty()
+            ? (s.done ? "done" : (s.analyzing ? "analyzing" : "pending"))
+            : "error";
+        nlohmann::json j = nlohmann::json::object();
+        j["status"] = status;
+        j["error"] = s.error;
+        j["analyzing"] = static_cast<bool>(s.analyzing);
+        j["done"] = static_cast<bool>(s.done);
+        j["progress_percent"] = static_cast<int>(s.progress_percent);
+        j["current_stage"] = s.current_stage;
+        j["duration_ms"] = static_cast<int64_t>(s.duration_ms);
+        j["nb_frames"] = static_cast<int64_t>(s.nb_frames);
+        j["indexed_visual_frames"] = static_cast<int64_t>(s.indexed_visual_frames);
+        j["indexed_audio_segments"] = static_cast<int64_t>(s.indexed_audio_segments);
+        return json_ok(j);
     });
 
     // POST /videos/{video_id}/search
@@ -375,7 +480,10 @@ void setup_routes(crow::SimpleApp& app) {
     // Compatibility: GET /index/info for smoke test
     CROW_ROUTE(app, "/index/info").methods(crow::HTTPMethod::GET)
     ([]() {
-        return json_ok(nlohmann::json{{"status","success"},{"index_size",(int)hnsw_index::size()}});
+        nlohmann::json j = nlohmann::json::object();
+        j["status"] = "success";
+        j["index_size"] = static_cast<int>(hnsw_index::size());
+        return json_ok(j);
     });
 
     // Compatibility: POST /search (query_text or embedding)
@@ -384,8 +492,64 @@ void setup_routes(crow::SimpleApp& app) {
         auto sreq = parse_search_request(req.body);
         if (sreq.query.empty() && sreq.embedding.empty())
             return json_err(400, "query_text or embedding required");
-        // Return empty, but valid, result set for smoke test
-        return json_ok(nlohmann::json{{"status","success"},{"count",0},{"results",nlohmann::json::array()}});
+
+        // 1) ready for embedding
+        std::vector<float> emb;
+        if (!sreq.embedding.empty()) {
+            emb = sreq.embedding;
+        } else {
+            try {
+                emb = get_clip().encodeText(sreq.query);
+            } catch (...) {
+                return json_err(500, "CLIP encoding failed");
+            }
+        }
+
+        // 2) HNSW search
+        auto hnsw_results = hnsw_index::search(emb, sreq.topk);
+
+        // 3) convert to API model
+        std::vector<SearchResult> api_results;
+        api_results.reserve(hnsw_results.size());
+        for (const auto& r : hnsw_results) {
+            api_results.push_back({r.id, r.start_time, r.end_time, r.caption, r.similarity});
+        }
+
+        // 4) create response
+        return create_search_response(api_results);
+    });
+
+    // Alias: POST /api/search (frontend proxies to /api/*)
+    CROW_ROUTE(app, "/api/search").methods(crow::HTTPMethod::POST)
+    ([](const crow::request& req) {
+        try {
+            auto sreq = parse_search_request(req.body);
+            if (sreq.query.empty() && sreq.embedding.empty())
+                return json_err(400, "query_text or embedding required");
+
+            std::vector<float> emb;
+            if (sreq.embedding.empty()) {
+                try {
+                    emb = get_clip().encodeText(sreq.query);
+                } catch (const std::exception& e) {
+                    return json_err(500, std::string("CLIP encoding failed: ") + e.what());
+                }
+            } else {
+                emb = sreq.embedding;
+            }
+
+            auto hnsw_results = hnsw_index::search(emb, sreq.topk);
+
+            std::vector<SearchResult> api_results;
+            api_results.reserve(hnsw_results.size());
+            for (const auto& r : hnsw_results) {
+                api_results.push_back({r.id, r.start_time, r.end_time, r.caption, r.similarity});
+            }
+
+            return create_search_response(api_results);
+        } catch (const std::exception& e) {
+            return json_err(500, std::string("Search failed: ") + e.what());
+        }
     });
 
     // GET /api/health
@@ -403,6 +567,7 @@ void setup_routes(crow::SimpleApp& app) {
         return res;
     });
 }
+
 
 SearchRequest parse_search_request(const std::string& body) {
     SearchRequest req;
@@ -431,24 +596,28 @@ SearchRequest parse_search_request(const std::string& body) {
 crow::response create_search_response(const std::vector<SearchResult>& results) {
     nlohmann::json json_results = nlohmann::json::array();
     for (const auto& r : results) {
-        json_results.push_back({
-            {"id", r.id},
-            {"start_time", r.start_time},
-            {"end_time", r.end_time},
-            {"caption", r.caption},
-            {"similarity", r.similarity}
-        });
+        nlohmann::json item = nlohmann::json::object();
+        item["id"] = r.id;
+        item["start_time"] = r.start_time;
+        item["end_time"] = r.end_time;
+        item["caption"] = r.caption;
+        item["similarity"] = r.similarity;
+        json_results.push_back(item);
     }
-    return json_ok(nlohmann::json{{"status","ok"},{"results", json_results}});
+    nlohmann::json out = nlohmann::json::object();
+    out["status"] = "ok";
+    out["count"] = static_cast<int>(results.size());
+    out["results"] = json_results;
+    return json_ok(out);
 }
 
 crow::response health_check() {
-    return json_ok(nlohmann::json{
-        {"status","ok"},
-        {"service","SearvidsServer"},
-        {"index_size", (int)hnsw_index::size()},
-        {"whisper_cli_available", server_api::g_whisper.cli_available()}
-    });
+    nlohmann::json j = nlohmann::json::object();
+    j["status"] = "ok";
+    j["service"] = "SearvidsServer";
+    j["index_size"] = static_cast<int>(hnsw_index::size());
+    j["whisper_cli_available"] = server_api::g_whisper.cli_available();
+    return json_ok(j);
 }
 
 } // namespace server_api

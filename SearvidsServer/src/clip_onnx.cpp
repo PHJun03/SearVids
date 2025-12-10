@@ -8,6 +8,12 @@
 #include <iostream>
 #include <numeric>
 #include <filesystem>
+#include <cstdio>
+
+#ifdef _WIN32
+#define popen _popen
+#define pclose _pclose
+#endif
 
 // stb_image for simple image loading; make sure stb_image.h is available in include paths.
 // Define implementation in this translation unit.
@@ -15,6 +21,13 @@
 #include "stb_image.h"
 
 using namespace std::string_literals;
+
+namespace {
+    static constexpr const char* TEXT_INPUT   = "input_ids";
+    static constexpr const char* TEXT_OUTPUT  = "last_hidden_state";
+    static constexpr const char* VISION_INPUT = "image";
+    static constexpr const char* VISION_OUTPUT = "image_embedding";
+}
 
 namespace clip_onnx {
 
@@ -49,7 +62,6 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
             session_options_.AppendExecutionProvider_CUDA(cuda_opts);
             std::cout << "[clip_onnx] Using CUDA Execution Provider\n";
 #else
-            // Try to append CUDA provider at runtime using Ort C++ API (works if onnxruntime built with CUDA)
             try {
                 OrtCUDAProviderOptions cuda_options;
                 session_options_.AppendExecutionProvider_CUDA(cuda_options);
@@ -74,6 +86,55 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
         vision_session_ = std::make_unique<Ort::Session>(env_, vision_model_path.c_str(), session_options_);
 #endif
 
+        // 기본 노드 이름 설정 (모델 이름과 맞춰야 함)
+        text_input_name_  = TEXT_INPUT;
+        text_output_name_ = TEXT_OUTPUT;
+        vision_input_name_  = VISION_INPUT;
+        vision_output_name_ = VISION_OUTPUT;
+
+        // Auto-detect input names if possible
+        Ort::AllocatorWithDefaultOptions allocator;
+        
+        std::cout << "[clip_onnx] Text Model Inputs:\n";
+        for(size_t i=0; i<text_session_->GetInputCount(); ++i) {
+            auto name = text_session_->GetInputNameAllocated(i, allocator);
+            std::cout << "  " << i << ": " << name.get() << "\n";
+        }
+        std::cout << "[clip_onnx] Text Model Outputs:\n";
+        for(size_t i=0; i<text_session_->GetOutputCount(); ++i) {
+            auto name = text_session_->GetOutputNameAllocated(i, allocator);
+            std::cout << "  " << i << ": " << name.get() << "\n";
+        }
+
+        std::cout << "[clip_onnx] Vision Model Inputs:\n";
+        for(size_t i=0; i<vision_session_->GetInputCount(); ++i) {
+            auto name = vision_session_->GetInputNameAllocated(i, allocator);
+            std::cout << "  " << i << ": " << name.get() << "\n";
+        }
+        std::cout << "[clip_onnx] Vision Model Outputs:\n";
+        for(size_t i=0; i<vision_session_->GetOutputCount(); ++i) {
+            auto name = vision_session_->GetOutputNameAllocated(i, allocator);
+            std::cout << "  " << i << ": " << name.get() << "\n";
+        }
+
+        if (text_session_->GetInputCount() > 0) {
+            auto name_ptr = text_session_->GetInputNameAllocated(0, allocator);
+            text_input_name_ = name_ptr.get();
+        }
+        if (text_session_->GetOutputCount() > 0) {
+            auto name_ptr = text_session_->GetOutputNameAllocated(0, allocator);
+            text_output_name_ = name_ptr.get();
+        }
+
+        if (vision_session_->GetInputCount() > 0) {
+            auto name_ptr = vision_session_->GetInputNameAllocated(0, allocator);
+            vision_input_name_ = name_ptr.get();
+        }
+        if (vision_session_->GetOutputCount() > 0) {
+            auto name_ptr = vision_session_->GetOutputNameAllocated(0, allocator);
+            vision_output_name_ = name_ptr.get();
+        }
+
         std::cout << "[clip_onnx] Loaded text model: " << text_model_path << "\n";
         std::cout << "[clip_onnx] Loaded vision model: " << vision_model_path << "\n";
     } catch (const Ort::Exception& e) {
@@ -92,7 +153,6 @@ ClipOnnx::~ClipOnnx() = default;
 /**
  * Run text session. Accepts token ids and returns L2-normalized embedding.
  *
- * Note: This implementation is minimal — many real models require attention_mask,
  * token_type_ids, etc. Here we assume a single input "input_ids" and that model returns
  * a single float output that can be averaged over sequence dimension if needed.
  */
@@ -112,13 +172,23 @@ std::vector<float> ClipOnnx::runTextSession(const std::vector<int64_t>& input_id
         input_shape.data(),
         input_shape.size());
 
-    // If model requires additional inputs (attention_mask) you should add them here.
-    const char* input_names[] = { text_input_name_.c_str() };
+    std::vector<int64_t> attention_mask(input_ids.size(), 1);
+
+    Ort::Value attention_mask_tensor = Ort::Value::CreateTensor<int64_t>(
+        mem_info,
+        attention_mask.data(),
+        attention_mask.size(),
+        input_shape.data(),
+        input_shape.size());
+
+    const char* input_names[] = { text_input_name_.c_str(), "attention_mask" };
     const char* output_names[] = { text_output_name_.c_str() };
+
+    Ort::Value input_tensors[] = { std::move(input_tensor), std::move(attention_mask_tensor) };
 
     try {
         auto output_tensors = text_session_->Run(Ort::RunOptions{nullptr},
-                                                 input_names, &input_tensor, 1,
+                                                 input_names, input_tensors, 2,
                                                  output_names, 1);
         if (output_tensors.empty()) throw std::runtime_error("Text model produced no outputs");
 
@@ -226,17 +296,26 @@ std::vector<float> ClipOnnx::runVisionSession(const std::vector<float>& image_te
    --------------------------- */
 
 std::vector<float> ClipOnnx::encodeText(const std::string& text) {
-    // Tokenize (naive); production code should use proper tokenizer to produce ids and attention mask
-    auto ids = naiveTokenize(text, 64);
+    // Use Python tokenizer for better accuracy
+    auto ids = pythonTokenize(text);
     if (ids.empty()) ids.push_back(0);
     std::vector<int64_t> shape = {1, static_cast<int64_t>(ids.size())};
-    return runTextSession(ids, shape);
+    auto res = runTextSession(ids, shape);
+    if (!res.empty()) {
+        std::cout << "[DEBUG] Text Emb (" << text.substr(0, 10) << "...): Size=" << res.size() 
+                  << " [" << res[0] << ", " << res[1] << ", ...]" << std::endl;
+    }
+    return res;
 }
 
 std::vector<float> ClipOnnx::encodeImageFromFile(const std::string& image_path) {
     auto img_tensor = loadAndPreprocessImage(image_path);
     std::vector<int64_t> shape = {1, 3, image_size_, image_size_};
-    return runVisionSession(img_tensor, shape);
+    auto res = runVisionSession(img_tensor, shape);
+    if (!res.empty()) {
+        std::cout << "[DEBUG] Image Emb (File): [" << res[0] << ", " << res[1] << ", ...]" << std::endl;
+    }
+    return res;
 }
 
 /* ---------------------------
@@ -253,18 +332,46 @@ std::vector<float> ClipOnnx::l2Normalize(const std::vector<float>& v) {
     return out;
 }
 
-std::vector<int64_t> ClipOnnx::naiveTokenize(const std::string& text, size_t max_tokens) {
-    // Very simple char-based tokenizer: map bytes to small ids.
-    // Replace with proper tokenizer for real use.
-    std::vector<int64_t> tok;
-    tok.reserve(std::min(max_tokens, text.size()));
-    for (char ch : text) {
-        if (ch == ' ') continue;
-        tok.push_back(static_cast<int64_t>(static_cast<unsigned char>(ch) % 256));
-        if (tok.size() >= max_tokens) break;
+std::vector<int64_t> ClipOnnx::pythonTokenize(const std::string& text) {
+    // Escape quotes in text
+    std::string escaped_text;
+    for (char c : text) {
+        if (c == '"') escaped_text += "\\\"";
+        else escaped_text += c;
     }
-    if (tok.empty()) tok.push_back(0);
-    return tok;
+    
+    // Call python script
+    // Assuming tokenizer.py is in /app/tokenizer.py in Docker
+    std::string cmd = "python3 /app/tokenizer.py \"" + escaped_text + "\"";
+    
+    std::array<char, 128> buffer;
+    std::string result;
+    
+    // Use popen to run command and capture output
+    std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
+    if (!pipe) {
+        std::cerr << "[clip_onnx] Error: popen() failed for tokenizer\n";
+        return {}; // Return empty on failure
+    }
+    
+    while (fgets(buffer.data(), buffer.size(), pipe.get()) != nullptr) {
+        result += buffer.data();
+    }
+    
+    // Parse result
+    std::vector<int64_t> tokens;
+    std::stringstream ss(result);
+    int64_t token;
+    while (ss >> token) {
+        tokens.push_back(token);
+    }
+    
+    if (tokens.empty()) {
+        std::cerr << "[clip_onnx] Warning: Python tokenizer returned empty.\n";
+        return {};
+    }
+    
+    return tokens;
 }
 
 /**
@@ -366,7 +473,12 @@ std::vector<float> ClipOnnx::encodeImage(const std::vector<uint8_t>& rgb_data,
 
     // 2) Run vision session
     std::vector<int64_t> shape = {1, 3, image_size_, image_size_};
-    return runVisionSession(img_tensor, shape);
+    auto res = runVisionSession(img_tensor, shape);
+    if (!res.empty()) {
+        std::cout << "[DEBUG] Image Emb (Buffer): Size=" << res.size() 
+                  << " [" << res[0] << ", " << res[1] << ", ...]" << std::endl;
+    }
+    return res;
 }
 
 /* ---------------------------

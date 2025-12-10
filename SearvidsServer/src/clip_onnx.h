@@ -4,16 +4,7 @@
 #include <vector>
 #include <memory>
 
-#ifdef __INTELLISENSE__
-namespace Ort {
-class Env {};
-class SessionOptions {};
-class AllocatorWithDefaultOptions {};
-class Session;
-}
-#else
 #include <onnxruntime_cxx_api.h>
-#endif
 
 namespace clip_onnx {
 
@@ -64,7 +55,7 @@ private:
 
     // Utils
     std::vector<float> l2Normalize(const std::vector<float>& v);
-    std::vector<int64_t> naiveTokenize(const std::string& text, size_t max_tokens = 64);
+    std::vector<int64_t> pythonTokenize(const std::string& text);
     std::vector<float> loadAndPreprocessImage(const std::string& path);
 
     // Preprocess RGB buffer

@@ -11,6 +11,7 @@ services:
       - ./data:/app/data
     environment:
       - MODEL_PATH=/app/models
+      - WHISPER_MODEL_PATH=/app/models/ggml-tiny.en.bin
     restart: always
 
   frontend:

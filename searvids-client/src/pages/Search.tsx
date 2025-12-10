@@ -21,6 +21,8 @@ export default function Search() {
         pageSize,
       }),
     enabled: query.length > 0,
+    retry: false,
+    refetchOnWindowFocus: false,
   });
 
   const handleSearch = (searchQuery: string) => {
