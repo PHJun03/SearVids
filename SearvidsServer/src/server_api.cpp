@@ -38,6 +38,7 @@ static crow::response json_ok(const nlohmann::json& j, int code = 200) {
     crow::response res(code, j.dump());
     res.add_header("Content-Type", "application/json");
     res.add_header("Access-Control-Allow-Origin", "*");
+    res.add_header("Cache-Control", "no-store, no-cache, must-revalidate");
     return res;
 }
 static crow::response json_err(int code, const std::string& msg) {
@@ -210,10 +211,11 @@ void analyze_video_async(VideoSession& sess) {
                 // Use stdout capture instead of file output
                 // -nt: no timestamps (just text)
                 // -np: no prints (only results)
+                // -f: input file (explicit flag)
                 // Remove --task as it is not supported by this version of whisper-cli
                 g_whisper.setCliArgsTemplate(
                     std::string("-m ") + modelPath +
-                    " -nt -np {infile}"
+                    " -nt -np -f {infile}"
                 );
 
                 // Run whisper and capture stdout

@@ -95,10 +95,27 @@ export default function Home() {
     if (searchMutation.isPending) return <p className="text-blue-200">Searching chapters...</p>;
     if (searchMutation.error) return <Error message="Failed to load chapters." />;
     const results = searchMutation.data?.results ?? [];
-    if (!results.length) return null;
+    
+    // Filter results based on similarity thresholds: Audio >= 0.30, Visual >= 0.25
+    const filteredResults = results.filter(r => {
+      if (r.caption === 'visual_frame') {
+        return r.similarity >= 0.25;
+      } else {
+        // Audio/Transcript
+        return r.similarity >= 0.30;
+      }
+    });
+
+    if (!filteredResults.length) {
+      if (results.length > 0) {
+        return <p className="text-gray-400">No results met the confidence threshold.</p>;
+      }
+      return null;
+    }
+
     return (
       <div className="w-full max-w-2xl space-y-4">
-        {results.map((r) => (
+        {filteredResults.map((r) => (
           <div key={`${r.id}-${r.start_time}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
             <img
               className="w-32 h-20 object-cover rounded"
