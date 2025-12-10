@@ -3,7 +3,7 @@
  * All rights reserved.
  */
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useMutation, useQuery } from '@tanstack/react-query';
 import { Search, Video, ArrowRight } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
@@ -45,7 +45,6 @@ export default function Home() {
     e.preventDefault();
     if (url && keyword) {
       setVideoId(null);
-      searchMutation.reset();
       mutate({ url, query: keyword });
     }
   };
@@ -85,55 +84,37 @@ export default function Home() {
   };
 
   // chapters search
-  const searchMutation = useMutation<SearchResponse, Error, { query: string }>({
-    mutationFn: ({ query }) => videoApi.searchChapters(query),
+  const {
+    data: searchData,
+    isFetching: isSearching,
+    error: searchError,
+  } = useQuery<SearchResponse>({
+    queryKey: ['search-chapters', keyword, analyzeStatus?.indexed_visual_frames, analyzeStatus?.indexed_audio_segments],
+    queryFn: () => videoApi.searchChapters(keyword),
+    enabled: !!keyword && !!analyzeStatus && (analyzeStatus.status === 'done' || analyzeStatus.indexed_visual_frames > 0 || analyzeStatus.indexed_audio_segments > 0),
+    staleTime: 0,
   });
 
-  // trigger search when analysis done
-  useEffect(() => {
-    if (analyzeStatus?.status === 'done' && keyword && !searchMutation.isPending && !searchMutation.isSuccess) {
-      searchMutation.mutate({ query: keyword });
-    }
-  }, [analyzeStatus?.status, keyword, searchMutation.isPending, searchMutation.isSuccess]);
-
   const renderChapters = () => {
-    if (searchMutation.isPending) return <p className="text-blue-200">Searching chapters...</p>;
-    if (searchMutation.error) return <Error message="Failed to load chapters." />;
-    const results = searchMutation.data?.results ?? [];
+    if (isSearching && !searchData) return <p className="text-blue-200">Searching chapters...</p>;
+    if (searchError) return <Error message="Failed to load chapters." />;
+    const results = searchData?.results ?? [];
     
-    // Filter results based on similarity thresholds: Audio >= 0.75, Visual >= 0.25
-    // Hybrid Search: If the keyword is exactly contained in the transcript, show it regardless of score.
-    const filteredResults = results.filter(r => {
-      const isVisual = r.caption === 'visual_frame';
+    if (!results.length) {
+      if (isSearching) return <p className="text-blue-200">Searching chapters...</p>;
+      // Only show "No results" if we are not searching and have no results, 
+      // but also check if we have started analysis.
+      if (analyzeStatus?.status === 'pending' || !analyzeStatus) return null;
       
-      // 1. Exact Keyword Match (Case-insensitive) for Audio/Transcript
-      if (!isVisual && keyword && r.caption.toLowerCase().includes(keyword.toLowerCase())) {
-        return true;
-      }
-
-      // 2. Semantic Threshold
-      // Audio: 0.75 (high threshold to avoid false positives like dog vs elephant)
-      // Visual: 0.25 (cross-modal scores are naturally lower)
-      const threshold = isVisual ? 0.25 : 0.75;
-      return r.similarity >= threshold;
-    });
-
-    const hiddenCount = results.length - filteredResults.length;
-
-    if (!filteredResults.length) {
-      if (results.length > 0) {
-        return (
-          <div className="text-center space-y-2">
-            <p className="text-gray-400">No results met the confidence threshold.</p>
-            <p className="text-xs text-gray-500">({hiddenCount} results hidden)</p>
-          </div>
-        );
-      }
-      return null;
+      return (
+        <div className="text-center space-y-2">
+          <p className="text-gray-400">No results found yet.</p>
+        </div>
+      );
     }
 
     // Sort by start time
-    const sortedResults = [...filteredResults].sort((a, b) => a.start_time - b.start_time);
+    const sortedResults = [...results].sort((a, b) => a.start_time - b.start_time);
 
     // Merge overlapping results
     const mergedResults: { start: number; end: number; items: typeof results }[] = [];
@@ -164,11 +145,6 @@ export default function Home() {
 
     return (
       <div className="w-full max-w-2xl space-y-4">
-        {hiddenCount > 0 && (
-          <p className="text-xs text-gray-500 text-right">
-            {hiddenCount} result(s) hidden due to low confidence
-          </p>
-        )}
         {mergedResults.map((group, idx) => {
           // Determine display properties
           const audioItem = group.items.find(i => i.caption !== 'visual_frame');

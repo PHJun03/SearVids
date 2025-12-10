@@ -9,6 +9,7 @@
 #include <vector>
 #include <chrono>
 #include <optional>
+#include <functional>
 
 namespace whisper_wrapper {
 
@@ -41,6 +42,12 @@ public:
     // Transcribe a file synchronously. Returns transcript on success, throws std::runtime_error on failure.
     // timeout_seconds: if <=0, no timeout.
     std::string transcribe_from_file(const std::string& infile, int timeout_seconds = 600) const;
+
+    // Transcribe with callback for streaming output.
+    // The callback receives raw stdout chunks.
+    void transcribe_with_callback(const std::string& infile, 
+                                  std::function<void(const std::string&)> callback,
+                                  int timeout_seconds = 600) const;
 
     // Helper: check if the configured CLI executable exists / is runnable
     bool cli_available() const;

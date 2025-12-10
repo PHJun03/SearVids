@@ -592,11 +592,12 @@ FrameData extract_frame_at(const std::string& video_path,
     return result;
 }
 
-std::vector<FrameData> extract_frames(const std::string& video_path,
-                                      double interval_seconds,
-                                      int max_frames,
-                                      int64_t start_time_ms,
-                                      int64_t end_time_ms) {
+void extract_frames_with_callback(const std::string& video_path,
+                                  std::function<void(const FrameData&)> callback,
+                                  double interval_seconds,
+                                  int max_frames,
+                                  int64_t start_time_ms,
+                                  int64_t end_time_ms) {
     init_ffmpeg();
 
     // Get video info first
@@ -672,10 +673,6 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
         throw std::runtime_error("Failed to create SwsContext");
     }
 
-    // Extract frames
-    std::vector<FrameData> results;
-    results.reserve(timestamps.size());
-
     AVPacket* pkt = av_packet_alloc();
     AVFrame* frame = av_frame_alloc();
     if (!pkt || !frame) {
@@ -737,9 +734,11 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
                         rgb_ptrs, rgb_linesizes
                     );
 
-                    results.push_back(std::move(frame_data));
-                    
-                    std::cout << "Extracted frame " << results.size() << "/" 
+                    if (callback) {
+                        callback(frame_data);
+                    }
+
+                    std::cout << "Extracted frame " << (current_target_idx + 1) << "/" 
                               << timestamps.size() << " at " << frame_ms << "ms" << std::endl;
 
                     current_target_idx++;
@@ -760,9 +759,24 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
     av_frame_free(&frame);
     av_packet_free(&pkt);
     sws_freeContext(sws_ctx);
+}
 
-    std::cout << "Successfully extracted " << results.size() << " frames" << std::endl;
-
+std::vector<FrameData> extract_frames(const std::string& video_path,
+                                      double interval_seconds,
+                                      int max_frames,
+                                      int64_t start_time_ms,
+                                      int64_t end_time_ms) {
+    std::vector<FrameData> results;
+    extract_frames_with_callback(
+        video_path,
+        [&results](const FrameData& frame) {
+            results.push_back(frame);
+        },
+        interval_seconds,
+        max_frames,
+        start_time_ms,
+        end_time_ms
+    );
     return results;
 }
 

@@ -62,6 +62,14 @@ std::vector<FrameData> extract_frames(const std::string& video_path,    // Input
                                       int64_t start_time_ms = 0,        // Start time in milliseconds (default: 0)
                                       int64_t end_time_ms = 0);         // End time in milliseconds (0 = until end)
 
+// Extract video frames with callback (streaming)
+void extract_frames_with_callback(const std::string& video_path,
+                                  std::function<void(const FrameData&)> callback,
+                                  double interval_seconds = 2.0,
+                                  int max_frames = 0,
+                                  int64_t start_time_ms = 0,
+                                  int64_t end_time_ms = 0);
+
 // Extract a single frame at specific timestamp
 FrameData extract_frame_at(const std::string& video_path,   // Input video file path
                            int64_t timestamp_ms,             // Timestamp in milliseconds

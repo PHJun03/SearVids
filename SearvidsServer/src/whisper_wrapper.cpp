@@ -13,6 +13,7 @@
 #include <fstream>
 #include <thread>
 #include <chrono>
+#include <functional>
 
 #if defined(_WIN32)
     #define NOMINMAX
@@ -368,6 +369,134 @@ std::string WhisperWrapper::transcribe_from_file(const std::string& infile, int 
     while (s < e && (output[s] == '\n' || output[s] == '\r' || output[s] == ' ' || output[s] == '\t')) ++s;
     while (e > s && (output[e-1] == '\n' || output[e-1] == '\r' || output[e-1] == ' ' || output[e-1] == '\t')) --e;
     return output.substr(s, e - s);
+}
+
+void WhisperWrapper::transcribe_with_callback(const std::string& infile, 
+                                              std::function<void(const std::string&)> callback,
+                                              int timeout_seconds) const {
+    auto cmd = buildCommand(infile);
+    
+#if defined(_WIN32)
+    // Windows implementation
+    std::wstring cmdline;
+    // Simple quoting for Windows cmdline
+    for (const auto& arg : cmd) {
+        if (!cmdline.empty()) cmdline += L" ";
+        std::string q_arg = arg;
+        // If arg contains spaces and not quoted, quote it
+        if (q_arg.find(' ') != std::string::npos && q_arg.front() != '"') {
+            q_arg = "\"" + q_arg + "\"";
+        }
+        
+        int len = MultiByteToWideChar(CP_UTF8, 0, q_arg.c_str(), -1, NULL, 0);
+        if (len > 0) {
+            std::vector<wchar_t> buf(len);
+            MultiByteToWideChar(CP_UTF8, 0, q_arg.c_str(), -1, buf.data(), len);
+            cmdline += buf.data();
+        }
+    }
+
+    std::vector<wchar_t> cmdLineBuf(cmdline.begin(), cmdline.end());
+    cmdLineBuf.push_back(0);
+
+    SECURITY_ATTRIBUTES saAttr;
+    saAttr.nLength = sizeof(SECURITY_ATTRIBUTES);
+    saAttr.bInheritHandle = TRUE;
+    saAttr.lpSecurityDescriptor = NULL;
+
+    HANDLE hStdOutRead = NULL;
+    HANDLE hStdOutWrite = NULL;
+    if (!CreatePipe(&hStdOutRead, &hStdOutWrite, &saAttr, 0)) {
+        throw std::runtime_error("CreatePipe failed");
+    }
+    if (!SetHandleInformation(hStdOutRead, HANDLE_FLAG_INHERIT, 0)) {
+        CloseHandle(hStdOutRead); CloseHandle(hStdOutWrite);
+        throw std::runtime_error("SetHandleInformation failed");
+    }
+
+    PROCESS_INFORMATION piProcInfo{};
+    STARTUPINFOW siStartInfo{};
+    siStartInfo.cb = sizeof(STARTUPINFOW);
+    siStartInfo.hStdError = hStdOutWrite;
+    siStartInfo.hStdOutput = hStdOutWrite;
+    siStartInfo.hStdInput = NULL;
+    siStartInfo.dwFlags |= STARTF_USESTDHANDLES;
+
+    BOOL ok = CreateProcessW(
+        NULL,
+        cmdLineBuf.data(),
+        NULL,
+        NULL,
+        TRUE,
+        CREATE_NO_WINDOW,
+        NULL,
+        NULL,
+        &siStartInfo,
+        &piProcInfo
+    );
+
+    CloseHandle(hStdOutWrite);
+    if (!ok) {
+        CloseHandle(hStdOutRead);
+        throw std::runtime_error("CreateProcess failed");
+    }
+
+    const DWORD bufSize = 4096;
+    CHAR buffer[bufSize];
+    DWORD read = 0;
+    DWORD waitMs = (timeout_seconds > 0) ? (DWORD)timeout_seconds * 1000 : INFINITE;
+    bool timedOut = false;
+
+    for (;;) {
+        DWORD avail = 0;
+        if (PeekNamedPipe(hStdOutRead, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+            if (ReadFile(hStdOutRead, buffer, std::min<DWORD>(bufSize-1, avail), &read, NULL) && read > 0) {
+                if (callback) callback(std::string(buffer, read));
+            }
+        }
+
+        DWORD waitResult = WaitForSingleObject(piProcInfo.hProcess, 100);
+        if (waitResult == WAIT_OBJECT_0) {
+            while (PeekNamedPipe(hStdOutRead, NULL, 0, NULL, &avail, NULL) && avail > 0) {
+                if (ReadFile(hStdOutRead, buffer, std::min<DWORD>(bufSize-1, avail), &read, NULL) && read > 0) {
+                    if (callback) callback(std::string(buffer, read));
+                } else break;
+            }
+            break;
+        }
+
+        if (timeout_seconds > 0) {
+            if (waitMs <= 100) {
+                timedOut = true;
+                break;
+            }
+            waitMs = (waitMs > 100) ? (waitMs - 100) : 0;
+        }
+    }
+
+    if (timedOut) {
+        TerminateProcess(piProcInfo.hProcess, 1);
+        CloseHandle(piProcInfo.hProcess);
+        CloseHandle(piProcInfo.hThread);
+        CloseHandle(hStdOutRead);
+        throw std::runtime_error("timeout");
+    }
+
+    DWORD exitCode = 0;
+    GetExitCodeProcess(piProcInfo.hProcess, &exitCode);
+    CloseHandle(piProcInfo.hProcess);
+    CloseHandle(piProcInfo.hThread);
+    CloseHandle(hStdOutRead);
+
+    if (exitCode != 0) {
+        throw std::runtime_error("Whisper process exited with code " + std::to_string(exitCode));
+    }
+
+#else
+    // POSIX implementation (simplified)
+    // TODO: Implement streaming for POSIX if needed
+    throw std::runtime_error("Streaming not implemented for POSIX yet");
+#endif
 }
 
 } // namespace whisper_wrapper
