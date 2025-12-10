@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <iostream>
+#include <regex>
 
 namespace server_api {
 
@@ -209,13 +210,12 @@ void analyze_video_async(VideoSession& sess) {
                 std::filesystem::create_directories("data");
                 
                 // Use stdout capture instead of file output
-                // -nt: no timestamps (just text)
                 // -np: no prints (only results)
                 // -f: input file (explicit flag)
-                // Remove --task as it is not supported by this version of whisper-cli
+                // Remove -nt (no timestamps) to get segments
                 g_whisper.setCliArgsTemplate(
                     std::string("-m ") + modelPath +
-                    " -nt -np -f {infile}"
+                    " -np -f {infile}"
                 );
 
                 // Run whisper and capture stdout
@@ -248,17 +248,54 @@ void analyze_video_async(VideoSession& sess) {
             sess.current_stage = "indexing_audio";
             struct Segment { float start; float end; std::string text; };
             std::vector<Segment> segments;
-            float dur_s = (sess.duration_ms > 0) 
-                ? static_cast<float>(sess.duration_ms) / 1000.0f 
-                : 0.0f;
             
-            segments.push_back({
-                0.0f, 
-                dur_s, 
-                transcript.empty() ? "no transcript" : transcript
-            });
+            // Parse transcript for timestamps
+            // Format: [00:00:00.000 --> 00:00:07.000]  Text
+            // Regex to capture HH:MM:SS.mmm
+            std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
+            std::smatch match;
+            
+            std::istringstream iss(transcript);
+            std::string line;
+            while (std::getline(iss, line)) {
+                // Remove \r if present
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                
+                if (std::regex_search(line, match, re)) {
+                    try {
+                        // Parse start
+                        float start = std::stof(match[1]) * 3600 + std::stof(match[2]) * 60 + std::stof(match[3]) + std::stof(match[4]) / 1000.0f;
+                        // Parse end
+                        float end = std::stof(match[5]) * 3600 + std::stof(match[6]) * 60 + std::stof(match[7]) + std::stof(match[8]) / 1000.0f;
+                        std::string text = match[9];
+                        
+                        // Trim text
+                        text.erase(0, text.find_first_not_of(" \t"));
+                        text.erase(text.find_last_not_of(" \t") + 1);
 
-            std::cout << "[" << sess.video_id << "] Indexing audio segments..." << std::endl;
+                        if (!text.empty()) {
+                            segments.push_back({start, end, text});
+                        }
+                    } catch (...) {
+                        // ignore parsing errors for a line
+                    }
+                }
+            }
+
+            // Fallback if no segments found (maybe format changed or no speech)
+            if (segments.empty()) {
+                float dur_s = (sess.duration_ms > 0) 
+                    ? static_cast<float>(sess.duration_ms) / 1000.0f 
+                    : 0.0f;
+                
+                segments.push_back({
+                    0.0f, 
+                    dur_s, 
+                    transcript.empty() ? "no transcript" : transcript
+                });
+            }
+
+            std::cout << "[" << sess.video_id << "] Indexing " << segments.size() << " audio segments..." << std::endl;
 
             auto& clip = get_clip();
             for (const auto& seg : segments) {
