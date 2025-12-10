@@ -14,6 +14,7 @@
 #include <thread>
 #include <chrono>
 #include <functional>
+#include <iostream>
 
 #if defined(_WIN32)
     #define NOMINMAX
@@ -375,6 +376,9 @@ void WhisperWrapper::transcribe_with_callback(const std::string& infile,
                                               std::function<void(const std::string&)> callback,
                                               int timeout_seconds) const {
     auto cmd = buildCommand(infile);
+    std::cout << "[WhisperWrapper] Running command: ";
+    for (const auto& arg : cmd) std::cout << arg << " ";
+    std::cout << std::endl;
     
 #if defined(_WIN32)
     // Windows implementation
@@ -493,9 +497,85 @@ void WhisperWrapper::transcribe_with_callback(const std::string& infile,
     }
 
 #else
-    // POSIX implementation (simplified)
-    // TODO: Implement streaming for POSIX if needed
-    throw std::runtime_error("Streaming not implemented for POSIX yet");
+    // POSIX implementation
+    int pipefd[2];
+    if (pipe(pipefd) == -1) {
+        throw std::runtime_error(std::string("pipe failed: ") + std::strerror(errno));
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(pipefd[0]); close(pipefd[1]);
+        throw std::runtime_error(std::string("fork failed: ") + std::strerror(errno));
+    }
+
+    if (pid == 0) {
+        // child
+        dup2(pipefd[1], STDOUT_FILENO);
+        dup2(pipefd[1], STDERR_FILENO);
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        std::vector<char*> cargs;
+        for (const auto &s : cmd) {
+            cargs.push_back(const_cast<char*>(s.c_str()));
+        }
+        cargs.push_back(nullptr);
+        execvp(cargs[0], cargs.data());
+        _exit(127);
+    }
+
+    // parent
+    close(pipefd[1]);
+    int flags = fcntl(pipefd[0], F_GETFL, 0);
+    fcntl(pipefd[0], F_SETFL, flags | O_NONBLOCK);
+
+    const int bufSize = 4096;
+    char buf[bufSize];
+    bool finished = false;
+    int status = 0;
+
+    auto start = std::chrono::steady_clock::now();
+    while (true) {
+        ssize_t r = read(pipefd[0], buf, bufSize-1);
+        if (r > 0) {
+            if (callback) callback(std::string(buf, r));
+        }
+
+        pid_t w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) {
+            finished = true;
+            // drain
+            while ((r = read(pipefd[0], buf, bufSize-1)) > 0) {
+                if (callback) callback(std::string(buf, r));
+            }
+            break;
+        }
+
+        if (timeout_seconds > 0) {
+            auto now = std::chrono::steady_clock::now();
+            auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+            if (elapsed >= timeout_seconds) {
+                kill(pid, SIGKILL);
+                waitpid(pid, &status, 0);
+                close(pipefd[0]);
+                throw std::runtime_error("timeout");
+            }
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    }
+
+    close(pipefd[0]);
+    int exit_code = -1;
+    if (finished) {
+        if (WIFEXITED(status)) exit_code = WEXITSTATUS(status);
+        else if (WIFSIGNALED(status)) exit_code = 128 + WTERMSIG(status);
+    }
+
+    if (exit_code != 0) {
+        throw std::runtime_error("Whisper process exited with code " + std::to_string(exit_code));
+    }
 #endif
 }
 

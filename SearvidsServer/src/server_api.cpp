@@ -182,6 +182,11 @@ void analyze_video_async(VideoSession& sess) {
                             
                             if (!line.empty() && line.back() == '\r') line.pop_back();
                             
+                            // Debug: print all lines to debug
+                            if (line.find("-->") == std::string::npos) {
+                                std::cout << "[Whisper Log] " << line << std::endl;
+                            }
+
                             std::smatch match;
                             if (std::regex_search(line, match, re)) {
                                 try {

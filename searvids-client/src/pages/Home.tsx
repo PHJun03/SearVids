@@ -4,7 +4,7 @@
  */
 
 import { useState } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, keepPreviousData } from '@tanstack/react-query';
 import { Search, Video, ArrowRight } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Loading from '../components/common/Loading';
@@ -93,6 +93,7 @@ export default function Home() {
     queryFn: () => videoApi.searchChapters(keyword),
     enabled: !!keyword && !!analyzeStatus && (analyzeStatus.status === 'done' || analyzeStatus.indexed_visual_frames > 0 || analyzeStatus.indexed_audio_segments > 0),
     staleTime: 0,
+    placeholderData: keepPreviousData,
   });
 
   const renderChapters = () => {
@@ -145,7 +146,7 @@ export default function Home() {
 
     return (
       <div className="w-full max-w-2xl space-y-4">
-        {mergedResults.map((group, idx) => {
+        {mergedResults.map((group) => {
           // Determine display properties
           const audioItem = group.items.find(i => i.caption !== 'visual_frame');
           const visualItems = group.items.filter(i => i.caption === 'visual_frame');
@@ -162,7 +163,7 @@ export default function Home() {
           const hasVisual = visualItems.length > 0;
 
           return (
-            <div key={`group-${idx}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
+            <div key={`group-${group.start}-${group.end}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
               <img
                 className="w-32 h-20 object-cover rounded"
                 src={videoApi.getThumbnailUrl(thumbnailId)}
