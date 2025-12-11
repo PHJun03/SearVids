@@ -3,8 +3,8 @@
  * All rights reserved.
  */
 
-import { useState } from 'react';
-import { useMutation, useQuery, keepPreviousData } from '@tanstack/react-query';
+import { useState, useEffect } from 'react';
+import { useMutation, useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import { Search, Video, ArrowRight } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Loading from '../components/common/Loading';
@@ -14,6 +14,7 @@ export default function Home() {
   const [url, setUrl] = useState('');
   const [keyword, setKeyword] = useState('');
   const [videoId, setVideoId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
   // start analyze
   const {
@@ -25,7 +26,37 @@ export default function Home() {
     onSuccess: (resp) => setVideoId(resp.video_id),
   });
 
-  // poll status
+  // WebSocket for status updates
+  useEffect(() => {
+    if (!videoId) return;
+
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const wsUrl = `${protocol}//${window.location.host}/api/ws/videos/${videoId}/status`;
+    const ws = new WebSocket(wsUrl);
+
+    ws.onopen = () => {
+      // Send subscribe message
+      ws.send(JSON.stringify({ type: 'subscribe', video_id: videoId }));
+    };
+
+    ws.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        if (data.type === 'status') {
+          // Update query cache directly
+          queryClient.setQueryData(['analyze-status', videoId], data);
+        }
+      } catch (e) {
+        console.error('WS parse error', e);
+      }
+    };
+
+    return () => {
+      ws.close();
+    };
+  }, [videoId, queryClient]);
+
+  // poll status (fallback if WS fails or initial load)
   const {
     data: analyzeStatus,
     isFetching: isPolling,
@@ -36,7 +67,8 @@ export default function Home() {
     enabled: !!videoId,
     refetchInterval: (query) => {
       const data = query.state.data;
-      if (!data) return 2000;
+      // If WS is working, we might not need polling, but keep it as backup with longer interval
+      if (!data) return 1000;
       return data.status === 'done' || data.status === 'error' ? false : 2000;
     },
   });
@@ -79,6 +111,10 @@ export default function Home() {
         {analyzeStatus.status === 'error' && (
           <p className="text-red-300 text-sm">Error: {analyzeStatus.error}</p>
         )}
+        <div className="flex justify-center gap-4 text-xs text-gray-400">
+            <span>Visual Frames: {analyzeStatus.indexed_visual_frames}</span>
+            <span>Audio Segments: {analyzeStatus.indexed_audio_segments}</span>
+        </div>
       </div>
     );
   };

@@ -65,7 +65,7 @@ struct SearchResult {
 
 // Global state (defined in .cpp)
 extern std::mutex g_sessions_mtx;
-extern std::unordered_map<std::string, VideoSession> g_sessions;
+extern std::unordered_map<std::string, std::shared_ptr<VideoSession>> g_sessions;
 extern whisper_wrapper::WhisperWrapper g_whisper;
 // NOTE: removed extern ClipOnnx g_clip; we use a lazy getter in .cpp
 
@@ -73,7 +73,7 @@ extern whisper_wrapper::WhisperWrapper g_whisper;
 std::string make_video_id(const std::string& url);
 
 // Async video analysis pipeline
-void analyze_video_async(VideoSession& sess);
+void analyze_video_async(std::shared_ptr<VideoSession> sess);
 
 // Initialize API routes
 void setup_routes(crow::SimpleApp& app);

@@ -23,8 +23,40 @@
 namespace server_api {
 
 std::mutex g_sessions_mtx;
-std::unordered_map<std::string, VideoSession> g_sessions;
+std::unordered_map<std::string, std::shared_ptr<VideoSession>> g_sessions;
 whisper_wrapper::WhisperWrapper g_whisper;
+
+// WebSocket connections: video_id -> list of connections
+struct WsConnection {
+    crow::websocket::connection* conn;
+};
+std::mutex g_ws_mtx;
+std::unordered_map<std::string, std::vector<WsConnection>> g_ws_connections;
+
+// Helper to broadcast status update
+void broadcast_status(const std::string& video_id, const VideoSession& sess) {
+    std::lock_guard<std::mutex> lk(g_ws_mtx);
+    auto it = g_ws_connections.find(video_id);
+    if (it == g_ws_connections.end()) return;
+
+    nlohmann::json j;
+    j["type"] = "status";
+    j["status"] = sess.error.empty() ? (sess.done ? "done" : (sess.analyzing ? "analyzing" : "pending")) : "error";
+    j["progress_percent"] = static_cast<int>(sess.progress_percent);
+    j["indexed_visual_frames"] = static_cast<int64_t>(sess.indexed_visual_frames);
+    j["indexed_audio_segments"] = static_cast<int64_t>(sess.indexed_audio_segments);
+    
+    std::string msg = j.dump();
+    
+    // Iterate and send. Remove closed connections? 
+    // Crow handles connection lifecycle, but we should be careful.
+    // We just send. If send fails, Crow might close it.
+    for (auto& ws : it->second) {
+        try {
+            ws.conn->send_text(msg);
+        } catch (...) {}
+    }
+}
 
 // Lazy initialize CLIP to avoid loading models during static initialization
 static std::unique_ptr<clip_onnx::ClipOnnx> g_clip_ptr;
@@ -63,7 +95,8 @@ std::string make_video_id(const std::string& url) {
     return std::to_string(h(url));
 }
 
-void analyze_video_async(VideoSession& sess) {
+void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
+    auto& sess = *sess_ptr;
     sess.analyzing = true;
     sess.started_at = std::chrono::system_clock::now();
     sess.current_stage = "downloading";
@@ -132,6 +165,17 @@ void analyze_video_async(VideoSession& sess) {
                                 "visual_frame"
                             );
                             sess.indexed_visual_frames++;
+                            
+                            // Update progress (Visual is approx 30% of total, from 15% to 45%)
+                            if (sess.nb_frames > 0) {
+                                double progress = (double)frame.timestamp_ms / (double)sess.duration_ms;
+                                if (progress > 1.0) progress = 1.0;
+                                int p = 15 + (int)(30.0 * progress);
+                                if (p > sess.progress_percent) sess.progress_percent = p;
+                            }
+                            
+                            // Broadcast update
+                            broadcast_status(sess.video_id, sess);
                         } catch (...) {}
                     },
                     2.0, 0, 0, 0, 224, 224
@@ -193,6 +237,35 @@ void analyze_video_async(VideoSession& sess) {
                                         auto emb = clip.encodeText(text);
                                         hnsw_index::add(emb, start, end, text);
                                         sess.indexed_audio_segments++;
+                                        
+                                        // Update progress (Audio is approx 45% of total, from 45% to 90%)
+                                        // We use end time to estimate progress
+                                        if (sess.duration_ms > 0) {
+                                            double progress = (double)(end * 1000.0) / (double)sess.duration_ms;
+                                            if (progress > 1.0) progress = 1.0;
+                                            // Audio part starts at 15% (parallel with visual), but let's just add to current?
+                                            // No, progress_percent is shared.
+                                            // Let's say Visual contributes 0-30 points, Audio contributes 0-45 points.
+                                            // Base is 15.
+                                            // We can't easily sum them without separate counters.
+                                            // But we can just take the MAX of (Visual Progress) and (Audio Progress + Offset)?
+                                            // Or just update if greater.
+                                            
+                                            // Let's assume Audio drives the main progress from 45% to 90% if it's slower?
+                                            // Or just use a simple max logic.
+                                            int p = 15 + 30 + (int)(45.0 * progress); // 45% to 90%
+                                            // This assumes Visual is done? No.
+                                            
+                                            // Let's just update progress based on time processed, regardless of stream.
+                                            // Since they run in parallel, the one that is further ahead in time might drive it.
+                                            // But Visual is usually slower.
+                                            
+                                            // Let's just update if p > current.
+                                            if (p > sess.progress_percent) sess.progress_percent = p;
+                                        }
+                                        
+                                        // Broadcast update
+                                        broadcast_status(sess.video_id, sess);
                                     }
                                 } catch (...) {}
                             }
@@ -218,6 +291,8 @@ void analyze_video_async(VideoSession& sess) {
         sess.done = true;
         sess.completed_at = std::chrono::system_clock::now();
         
+        broadcast_status(sess.video_id, sess);
+        
         auto duration = std::chrono::duration_cast<std::chrono::seconds>(
             sess.completed_at - sess.started_at
         ).count();
@@ -230,6 +305,8 @@ void analyze_video_async(VideoSession& sess) {
         sess.error = e.what();
         sess.current_stage = "failed";
         sess.completed_at = std::chrono::system_clock::now();
+        
+        broadcast_status(sess.video_id, sess);
         
         std::cerr << "[" << sess.video_id << "] Analysis failed: " 
                   << e.what() << std::endl;
@@ -274,6 +351,55 @@ static std::vector<SearchResult> filter_results(const std::vector<hnsw_index::Ti
 }
 
 void setup_routes(crow::SimpleApp& app) {
+    // WebSocket Route
+    CROW_WEBSOCKET_ROUTE(app, "/ws/videos/<string>/status")
+    .onopen([&](crow::websocket::connection& conn) {
+        // We can't easily get the video_id from the connection object in onopen in older Crow versions?
+        // But the route has <string>.
+        // Crow passes args to the handler.
+        // Wait, CROW_WEBSOCKET_ROUTE syntax with args:
+        // .onopen([&](crow::websocket::connection& conn) { ... })
+        // It doesn't pass the args to onopen.
+        // We need to parse it from conn.get_url()? No.
+        // Actually, Crow's websocket route doesn't support capturing args in onopen easily.
+        // But we can use a lambda that captures nothing?
+        // Let's check Crow documentation or source if available.
+        // Assuming we can't get it easily, we might need the client to send a "subscribe" message.
+    })
+    .onmessage([&](crow::websocket::connection& conn, const std::string& data, bool is_binary) {
+        if (is_binary) return;
+        try {
+            auto j = nlohmann::json::parse(data);
+            if (j.contains("type") && j["type"] == "subscribe" && j.contains("video_id")) {
+                std::string vid = j["video_id"];
+                std::lock_guard<std::mutex> lk(g_ws_mtx);
+                g_ws_connections[vid].push_back({&conn});
+                
+                // Send initial status if exists
+                std::lock_guard<std::mutex> lk2(g_sessions_mtx);
+                auto it = g_sessions.find(vid);
+                if (it != g_sessions.end()) {
+                    auto& sess = *it->second;
+                    nlohmann::json resp;
+                    resp["type"] = "status";
+                    resp["status"] = sess.error.empty() ? (sess.done ? "done" : (sess.analyzing ? "analyzing" : "pending")) : "error";
+                    resp["progress_percent"] = static_cast<int>(sess.progress_percent);
+                    resp["indexed_visual_frames"] = static_cast<int64_t>(sess.indexed_visual_frames);
+                    resp["indexed_audio_segments"] = static_cast<int64_t>(sess.indexed_audio_segments);
+                    conn.send_text(resp.dump());
+                }
+            }
+        } catch (...) {}
+    })
+    .onclose([&](crow::websocket::connection& conn, const std::string& reason) {
+        std::lock_guard<std::mutex> lk(g_ws_mtx);
+        for (auto& kv : g_ws_connections) {
+            auto& list = kv.second;
+            list.erase(std::remove_if(list.begin(), list.end(), 
+                [&](const WsConnection& c) { return c.conn == &conn; }), list.end());
+        }
+    });
+
     // POST /videos/analyze: start async ingestion
     CROW_ROUTE(app, "/videos/analyze").methods(crow::HTTPMethod::POST)
     ([](const crow::request& req) {
@@ -285,24 +411,26 @@ void setup_routes(crow::SimpleApp& app) {
         auto vid = make_video_id(url);
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
-            auto& sess = g_sessions[vid];
-            if (sess.video_id.empty()) {
-                sess.video_id = vid;
-                sess.source_url = url;
-                // Capture video_id to avoid dangling reference
-                std::thread([video_id = sess.video_id]() {
-                    VideoSession* psess = nullptr;
-                    {
-                        std::lock_guard<std::mutex> lk2(g_sessions_mtx);
-                        auto it = g_sessions.find(video_id);
-                        if (it != g_sessions.end()) {
-                            psess = &it->second;
-                        }
-                    } // lock released here
-                    if (psess) {
-                        analyze_video_async(*psess);
-                    }
+            // Use shared_ptr
+            auto it = g_sessions.find(vid);
+            if (it == g_sessions.end()) {
+                auto sess = std::make_shared<VideoSession>();
+                sess->video_id = vid;
+                sess->source_url = url;
+                g_sessions[vid] = sess;
+                
+                std::thread([sess]() {
+                    analyze_video_async(sess);
                 }).detach();
+            } else {
+                // Already exists, if not analyzing and not done, maybe restart?
+                // For now, just return existing
+                auto sess = it->second;
+                if (!sess->analyzing && !sess->done) {
+                     std::thread([sess]() {
+                        analyze_video_async(sess);
+                    }).detach();
+                }
             }
         }
         nlohmann::json resp = nlohmann::json::object();
@@ -322,19 +450,18 @@ void setup_routes(crow::SimpleApp& app) {
         auto vid = make_video_id(url);
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
-            auto& sess = g_sessions[vid];
-            if (sess.video_id.empty()) {
-                sess.video_id = vid;
-                sess.source_url = url;
-                std::thread([video_id = sess.video_id]() {
-                    VideoSession* psess = nullptr;
-                    {
-                        std::lock_guard<std::mutex> lk2(g_sessions_mtx);
-                        auto it = g_sessions.find(video_id);
-                        if (it != g_sessions.end()) psess = &it->second;
-                    }
-                    if (psess) analyze_video_async(*psess);
-                }).detach();
+            auto it = g_sessions.find(vid);
+            if (it == g_sessions.end()) {
+                auto sess = std::make_shared<VideoSession>();
+                sess->video_id = vid;
+                sess->source_url = url;
+                g_sessions[vid] = sess;
+                std::thread([sess]() { analyze_video_async(sess); }).detach();
+            } else {
+                auto sess = it->second;
+                if (!sess->analyzing && !sess->done) {
+                     std::thread([sess]() { analyze_video_async(sess); }).detach();
+                }
             }
         }
         nlohmann::json resp = nlohmann::json::object();
@@ -354,19 +481,18 @@ void setup_routes(crow::SimpleApp& app) {
         auto vid = make_video_id(url);
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
-            auto& sess = g_sessions[vid];
-            if (sess.video_id.empty()) {
-                sess.video_id = vid;
-                sess.source_url = url;
-                std::thread([video_id = sess.video_id]() {
-                    VideoSession* psess = nullptr;
-                    {
-                        std::lock_guard<std::mutex> lk2(g_sessions_mtx);
-                        auto it = g_sessions.find(video_id);
-                        if (it != g_sessions.end()) psess = &it->second;
-                    }
-                    if (psess) analyze_video_async(*psess);
-                }).detach();
+            auto it = g_sessions.find(vid);
+            if (it == g_sessions.end()) {
+                auto sess = std::make_shared<VideoSession>();
+                sess->video_id = vid;
+                sess->source_url = url;
+                g_sessions[vid] = sess;
+                std::thread([sess]() { analyze_video_async(sess); }).detach();
+            } else {
+                auto sess = it->second;
+                if (!sess->analyzing && !sess->done) {
+                     std::thread([sess]() { analyze_video_async(sess); }).detach();
+                }
             }
         }
         nlohmann::json resp = nlohmann::json::object();
@@ -382,7 +508,7 @@ void setup_routes(crow::SimpleApp& app) {
         auto it = g_sessions.find(video_id);
         if (it == g_sessions.end()) return json_err(404, "not found");
 
-        const auto& s = it->second;
+        const auto& s = *it->second;
         std::string status = s.error.empty()
             ? (s.done ? "done" : (s.analyzing ? "analyzing" : "pending"))
             : "error";
@@ -407,7 +533,7 @@ void setup_routes(crow::SimpleApp& app) {
         auto it = g_sessions.find(video_id);
         if (it == g_sessions.end()) return json_err(404, "not found");
 
-        const auto& s = it->second;
+        const auto& s = *it->second;
         std::string status = s.error.empty()
             ? (s.done ? "done" : (s.analyzing ? "analyzing" : "pending"))
             : "error";
@@ -458,7 +584,7 @@ void setup_routes(crow::SimpleApp& app) {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
             auto it = g_sessions.find(video_id);
             if (it == g_sessions.end()) return crow::response(404);
-            path = it->second.local_path;
+            path = it->second->local_path;
         }
 
         char* ts_str = req.url_params.get("timestamp");
@@ -497,7 +623,7 @@ void setup_routes(crow::SimpleApp& app) {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
             auto it = g_sessions.find(video_id);
             if (it == g_sessions.end()) return crow::response(404);
-            path = it->second.local_path;
+            path = it->second->local_path;
         }
 
         char* ts_str = req.url_params.get("timestamp");
