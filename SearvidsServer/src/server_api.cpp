@@ -163,7 +163,7 @@ void analyze_video_async(VideoSession& sess) {
                 g_whisper.setCliExecutable(whisperPath);
 
                 const char* envModel = std::getenv("WHISPER_MODEL_PATH");
-                std::string modelPath = envModel ? std::string(envModel) : std::string("/app/models/ggml-tiny.en.bin");
+                std::string modelPath = envModel ? std::string(envModel) : std::string("/app/models/ggml-base.bin");
                 
                 g_whisper.setCliArgsTemplate(std::string("-m ") + modelPath + " -np -f {infile}");
                 
