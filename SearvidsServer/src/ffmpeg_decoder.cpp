@@ -452,7 +452,9 @@ int64_t ms_to_avtime(int64_t ms, int64_t time_base_num, int64_t time_base_den) {
 
 FrameData extract_frame_at(const std::string& video_path,
                            int64_t timestamp_ms,
-                           bool seek_backward) {
+                           bool seek_backward,
+                           int target_width,
+                           int target_height) {
     init_ffmpeg();
 
     auto fmt_deleter = [](AVFormatContext* ctx) {
@@ -536,10 +538,14 @@ FrameData extract_frame_at(const std::string& video_path,
 
                 // Check if this is the frame we want
                 if (frame_ms >= timestamp_ms || !seek_backward) {
+                    // Determine output dimensions
+                    int dst_width = (target_width > 0) ? target_width : frame->width;
+                    int dst_height = (target_height > 0) ? target_height : frame->height;
+
                     // Convert to RGB24 using swscale
                     SwsContext* sws_ctx = sws_getContext(
                         frame->width, frame->height, static_cast<AVPixelFormat>(frame->format),
-                        frame->width, frame->height, AV_PIX_FMT_RGB24,
+                        dst_width, dst_height, AV_PIX_FMT_RGB24,
                         SWS_BILINEAR, nullptr, nullptr, nullptr
                     );
 
@@ -549,11 +555,11 @@ FrameData extract_frame_at(const std::string& video_path,
                     }
 
                     // Allocate RGB buffer
-                    int rgb_size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, frame->width, frame->height, 1);
+                    int rgb_size = av_image_get_buffer_size(AV_PIX_FMT_RGB24, dst_width, dst_height, 1);
                     result.rgb_data.resize(rgb_size);
 
                     uint8_t* rgb_ptrs[4] = {result.rgb_data.data(), nullptr, nullptr, nullptr};
-                    int rgb_linesizes[4] = {frame->width * 3, 0, 0, 0};
+                    int rgb_linesizes[4] = {dst_width * 3, 0, 0, 0};
 
                     // Convert frame to RGB24
                     sws_scale(
@@ -565,8 +571,8 @@ FrameData extract_frame_at(const std::string& video_path,
 
                     sws_freeContext(sws_ctx);
 
-                    result.width = frame->width;
-                    result.height = frame->height;
+                    result.width = dst_width;
+                    result.height = dst_height;
                     result.timestamp_ms = frame_ms;
 
                     frame_found = true;

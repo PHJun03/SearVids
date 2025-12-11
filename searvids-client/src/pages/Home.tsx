@@ -156,7 +156,7 @@ export default function Home() {
           
           // Find best visual item for thumbnail, or fallback to first item
           const bestVisual = visualItems.sort((a, b) => b.similarity - a.similarity)[0];
-          const thumbnailId = bestVisual ? bestVisual.id : group.items[0].id;
+          const thumbnailItem = bestVisual || group.items[0];
           
           const maxScore = Math.max(...group.items.map(i => i.similarity));
           const hasAudio = !!audioItem;
@@ -166,7 +166,7 @@ export default function Home() {
             <div key={`group-${group.start}-${group.end}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
               <img
                 className="w-32 h-20 object-cover rounded"
-                src={videoApi.getThumbnailUrl(thumbnailId)}
+                src={videoApi.getThumbnailUrl(videoId!, thumbnailItem.start_time)}
                 alt="thumbnail"
               />
               <div className="flex-1">

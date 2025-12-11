@@ -77,7 +77,9 @@ void extract_frames_with_callback(const std::string& video_path,
 // Extract a single frame at specific timestamp
 FrameData extract_frame_at(const std::string& video_path,   // Input video file path
                            int64_t timestamp_ms,             // Timestamp in milliseconds
-                           bool seek_backward = true);       // If true, seek to nearest keyframe before timestamp
+                           bool seek_backward = true,        // If true, seek to nearest keyframe before timestamp
+                           int target_width = -1,            // Target width for resizing (-1 = original width)
+                           int target_height = -1);          // Target height for resizing (-1 = original height)
 
 // Utility: convert duration (AV) to ms (used internally)
 int64_t avtime_to_ms(int64_t avtime, int64_t time_base_num, int64_t time_base_den);

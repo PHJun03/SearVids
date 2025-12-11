@@ -5,6 +5,7 @@
 
 #include "server_api.h"
 #include <nlohmann/json.hpp>
+#include <opencv2/opencv.hpp>
 #include <thread>
 #include <functional>
 #include <memory>
@@ -447,6 +448,78 @@ void setup_routes(crow::SimpleApp& app) {
         auto hnsw_results = hnsw_index::search(query_emb, search_req.topk);
         auto api_results = filter_results(hnsw_results, search_req.query);
         return create_search_response(api_results);
+    });
+
+    // GET /videos/{video_id}/thumbnail?timestamp=12345
+    CROW_ROUTE(app, "/videos/<string>/thumbnail").methods(crow::HTTPMethod::GET)
+    ([](const crow::request& req, const std::string& video_id) {
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            auto it = g_sessions.find(video_id);
+            if (it == g_sessions.end()) return crow::response(404);
+            path = it->second.local_path;
+        }
+
+        char* ts_str = req.url_params.get("timestamp");
+        if (!ts_str) return crow::response(400, "timestamp required");
+        int64_t ts = std::stoll(ts_str);
+
+        try {
+            // Extract frame (resize to 320x180 for thumbnail)
+            auto frame = ffmpeg_decoder::extract_frame_at(path, ts, true, 320, 180);
+            
+            // Convert to OpenCV Mat
+            cv::Mat img(frame.height, frame.width, CV_8UC3, frame.rgb_data.data());
+            cv::cvtColor(img, img, cv::COLOR_RGB2BGR); // OpenCV uses BGR
+
+            // Encode to JPEG
+            std::vector<uchar> buf;
+            cv::imencode(".jpg", img, buf);
+
+            std::string s(buf.begin(), buf.end());
+            crow::response res(s);
+            res.add_header("Content-Type", "image/jpeg");
+            res.add_header("Access-Control-Allow-Origin", "*");
+            res.add_header("Cache-Control", "public, max-age=3600");
+            return res;
+        } catch (const std::exception& e) {
+            std::cerr << "Thumbnail error: " << e.what() << std::endl;
+            return crow::response(500);
+        }
+    });
+
+    // Alias: GET /api/videos/{video_id}/thumbnail
+    CROW_ROUTE(app, "/api/videos/<string>/thumbnail").methods(crow::HTTPMethod::GET)
+    ([](const crow::request& req, const std::string& video_id) {
+        std::string path;
+        {
+            std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            auto it = g_sessions.find(video_id);
+            if (it == g_sessions.end()) return crow::response(404);
+            path = it->second.local_path;
+        }
+
+        char* ts_str = req.url_params.get("timestamp");
+        if (!ts_str) return crow::response(400, "timestamp required");
+        int64_t ts = std::stoll(ts_str);
+
+        try {
+            auto frame = ffmpeg_decoder::extract_frame_at(path, ts, true, 320, 180);
+            cv::Mat img(frame.height, frame.width, CV_8UC3, frame.rgb_data.data());
+            cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+            std::vector<uchar> buf;
+            cv::imencode(".jpg", img, buf);
+            std::string s(buf.begin(), buf.end());
+            crow::response res(s);
+            res.add_header("Content-Type", "image/jpeg");
+            res.add_header("Access-Control-Allow-Origin", "*");
+            res.add_header("Cache-Control", "public, max-age=3600");
+            return res;
+        } catch (const std::exception& e) {
+            std::cerr << "Thumbnail error: " << e.what() << std::endl;
+            return crow::response(500);
+        }
     });
 
     // Compatibility: GET /index/info for smoke test

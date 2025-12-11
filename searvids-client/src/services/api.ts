@@ -55,7 +55,13 @@ export const videoApi = {
     return `${API_BASE_URL}/videos/${id}/stream`;
   },
 
-  getThumbnailUrl: (id: number | string) => `${API_BASE_URL}/videos/${id}/thumbnail`,
+  getThumbnailUrl: (id: number | string, timestamp?: number) => {
+    let url = `${API_BASE_URL}/videos/${id}/thumbnail`;
+    if (timestamp !== undefined) {
+      url += `?timestamp=${Math.floor(timestamp * 1000)}`; // Convert seconds to ms
+    }
+    return url;
+  },
 
   getAllTags: async () => {
     const response = await api.get<VideoTag[]>('/tags');

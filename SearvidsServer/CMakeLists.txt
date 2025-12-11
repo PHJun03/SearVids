@@ -111,6 +111,9 @@ add_library(downloader STATIC
 target_link_libraries(downloader PRIVATE CURL::libcurl)
 
 
+# ========== Add OpenCV ==========
+find_package(OpenCV REQUIRED)
+
 # ========== Add Server API ==========
 # Crow(HTTP Framework)
 include(FetchContent)
@@ -140,6 +143,7 @@ target_link_libraries(server_api PRIVATE
     clip_onnx
     whisper_wrapper
     nlohmann_json::nlohmann_json
+    ${OpenCV_LIBS}
 )
 
 

@@ -32,7 +32,7 @@ export default function VideoCard({ video }: VideoCardProps) {
     >
       <div className="relative bg-gray-800 h-40 flex items-center justify-center">
         <img
-          src={videoApi.getThumbnailUrl(video.id)}
+          src={videoApi.getThumbnailUrl(video.id, 0)}
           alt={video.title}
           className="w-full h-full object-cover"
           onError={(e) => {

@@ -24,8 +24,9 @@ def main():
     # Default to base, user can set env
     model_size = os.environ.get("WHISPER_MODEL_SIZE", "base") 
     
-    # Use CUDA if available, else CPU
-    if os.environ.get("CUDA_VISIBLE_DEVICES") == "":
+    # Check for CUDA
+    cuda_env = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if cuda_env is None or cuda_env == "":
         device = "cpu"
         compute_type = "int8" # CPU usually supports int8 better for speed
     else:
