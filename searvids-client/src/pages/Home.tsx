@@ -7,7 +7,6 @@ import { useState, useEffect } from 'react';
 import { useMutation, useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import { Search, Video, ArrowRight } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
-import Loading from '../components/common/Loading';
 import Error from '../components/common/Error';
 
 export default function Home() {
@@ -59,7 +58,6 @@ export default function Home() {
   // poll status (fallback if WS fails or initial load)
   const {
     data: analyzeStatus,
-    isFetching: isPolling,
     error: statusError,
   } = useQuery<AnalyzeStatus>({
     queryKey: ['analyze-status', videoId],
@@ -284,12 +282,6 @@ export default function Home() {
 
        {/* Results / Status Section */}
         <div className="space-y-6 w-full max-w-2xl mx-auto flex flex-col items-center">
-          {(isPending || isPolling) && (
-            <div className="text-center py-12">
-              <Loading />
-              <p className="mt-4 text-blue-200 animate-pulse">Analyzing video content...</p>
-            </div>
-          )}
           {analyzeError && (
             <div className="text-center w-full">
               <Error message="Failed to start analysis. Please check the URL and try again." />
