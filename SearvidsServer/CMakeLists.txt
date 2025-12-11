@@ -18,7 +18,6 @@ set(SOURCES
 )
 
 add_executable(SearvidsServer ${SOURCES})
-add_dependencies(SearvidsServer whisper-cli)
 
 target_include_directories(SearvidsServer PRIVATE ${PROJECT_SOURCE_DIR}/src)
 
@@ -45,22 +44,20 @@ set(FFMPEG_LIBRARIES ${FFMPEG_LIBRARIES} PkgConfig::FFMPEG)
 target_link_libraries(ffmpeg_decoder PRIVATE ${FFMPEG_LIBRARIES})
 
 # ========== Add Whisper ==========
-# whisper.cpp
-set(WHISPER_BUILD_EXAMPLES ON CACHE BOOL "" FORCE)
-add_subdirectory(third_party/whisper.cpp EXCLUDE_FROM_ALL)
-
 add_library(whisper_wrapper STATIC
     src/whisper_wrapper.cpp
     src/whisper_wrapper.h
 )
-
-target_include_directories(whisper_wrapper PRIVATE ${CMAKE_SOURCE_DIR}/third_party/whisper.cpp/include)
 
 # ========== Add ONNX ==========
 add_library(clip_onnx STATIC
     src/clip_onnx.cpp
     src/clip_onnx.h
 )
+
+if(USE_TENSORRT)
+    target_compile_definitions(clip_onnx PRIVATE USE_TENSORRT)
+endif()
 
 set(ONNXRUNTIME_ROOT "${CMAKE_SOURCE_DIR}/third_party/onnxruntime")
 

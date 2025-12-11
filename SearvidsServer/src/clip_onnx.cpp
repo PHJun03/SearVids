@@ -71,6 +71,23 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
                 OrtCUDAProviderOptions cuda_options;
                 session_options_.AppendExecutionProvider_CUDA(cuda_options);
                 std::cout << "[clip_onnx] CUDA EP appended (if available)\n";
+
+#ifdef USE_TENSORRT
+                // Attempt to append TensorRT Execution Provider after CUDA
+                try {
+                    Ort::TensorRTProviderOptions trt_options;
+                    std::unordered_map<std::string, std::string> options;
+                    options["device_id"] = "0";
+                    options["trt_fp16_enable"] = "1";
+                    options["trt_engine_cache_enable"] = "1";
+                    options["trt_engine_cache_path"] = "tensorrt_cache";
+                    trt_options.Update(options);
+                    session_options_.AppendExecutionProvider_TensorRT_V2(*trt_options);
+                    std::cout << "[clip_onnx] Appended TensorRT Execution Provider (FP16 & Cache Enabled)\n";
+                } catch (const Ort::Exception& e) {
+                    std::cerr << "[clip_onnx] Warning: TensorRT EP could not be appended. ONNX Runtime will fall back to other EPs. Error: " << e.what() << "\n";
+                }
+#endif
             } catch (...) {
                 std::cerr << "[clip_onnx] Warning: CUDA EP append failed; falling back to CPU\n";
                 use_gpu_ = false;
@@ -91,7 +108,6 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
         vision_session_ = std::make_unique<Ort::Session>(env_, vision_model_path.c_str(), session_options_);
 #endif
 
-        // 기본 노드 이름 설정 (모델 이름과 맞춰야 함)
         text_input_name_  = TEXT_INPUT;
         text_output_name_ = TEXT_OUTPUT;
         vision_input_name_  = VISION_INPUT;

@@ -35,7 +35,7 @@ static clip_onnx::ClipOnnx& get_clip() {
         g_clip_ptr = std::make_unique<clip_onnx::ClipOnnx>(
             "/app/models/clip_text_sim.onnx",
             "/app/models/clip_vision_sim.onnx",
-            false,          // device_gpu
+            true,           // device_gpu
             224             // image size
         );
     }
@@ -152,20 +152,11 @@ void analyze_video_async(VideoSession& sess) {
                     throw std::runtime_error("Failed to extract audio");
                 }
                 
-                std::cout << "[" << sess.video_id << "] Starting transcription..." << std::endl;
+                std::cout << "[" << sess.video_id << "] Starting transcription (CTranslate2)..." << std::endl;
                 
-                // Setup Whisper
-                std::string whisperPath = "SearvidsServer/third_party/whisper.cpp/build/bin/Release/whisper-cli.exe";
-                if (!std::filesystem::exists(whisperPath)) {
-                    if (std::filesystem::exists("/app/whisper-cli")) whisperPath = "/app/whisper-cli";
-                    else whisperPath = "whisper-cli.exe";
-                }
-                g_whisper.setCliExecutable(whisperPath);
-
-                const char* envModel = std::getenv("WHISPER_MODEL_PATH");
-                std::string modelPath = envModel ? std::string(envModel) : std::string("/app/models/ggml-base.bin");
-                
-                g_whisper.setCliArgsTemplate(std::string("-m ") + modelPath + " -np -f {infile}");
+                // Setup Whisper (Use Python script with faster-whisper)
+                g_whisper.setCliExecutable("python3");
+                g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
                 
                 // Parse and Index incrementally
                 std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");

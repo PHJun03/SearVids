@@ -11,7 +11,12 @@ services:
       - ./data:/app/data
     environment:
       - MODEL_PATH=/app/models
-      - WHISPER_MODEL_PATH=/app/models/ggml-base.bin
+      - WHISPER_MODEL_SIZE=base
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [gpu]
     restart: always
 
   frontend:

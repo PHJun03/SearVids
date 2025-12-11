@@ -1,0 +1,26 @@
+services:
+  backend:
+    build: 
+      context: ./SearvidsServer
+      dockerfile: Dockerfile.local
+    container_name: searvids-backend-local
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./models:/app/models
+      - ./data:/app/data
+    environment:
+      - MODEL_PATH=/app/models
+      - WHISPER_MODEL_SIZE=base
+      # Force CPU usage for scripts if they check for CUDA
+      - CUDA_VISIBLE_DEVICES=""
+    restart: always
+
+  frontend:
+    build: ./searvids-client
+    container_name: searvids-frontend-local
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+    restart: always

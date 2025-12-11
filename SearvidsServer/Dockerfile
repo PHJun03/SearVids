@@ -1,5 +1,5 @@
 # 1. Build Stage
-FROM ubuntu:22.04 AS builder
+FROM nvidia/cuda:12.2.0-base-ubuntu22.04 AS builder
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Etc/UTC
@@ -20,11 +20,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Download ONNX Runtime (Linux x64) → /app/third_party/onnxruntime
 ARG ORT_VERSION=1.23.2
 WORKDIR /tmp
-RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-${ORT_VERSION}.tgz \
- && tar -xzf onnxruntime-linux-x64-${ORT_VERSION}.tgz \
+RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz \
+ && tar -xzf onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz \
  && mkdir -p /app/third_party/onnxruntime \
- && cp -r onnxruntime-linux-x64-${ORT_VERSION}/* /app/third_party/onnxruntime/ \
- && rm -rf onnxruntime-linux-x64-${ORT_VERSION}* 
+ && cp -r onnxruntime-linux-x64-gpu-${ORT_VERSION}/* /app/third_party/onnxruntime/ \
+ && rm -rf onnxruntime-linux-x64-gpu-${ORT_VERSION}*
 
 # Copy source code
 WORKDIR /app
@@ -32,13 +32,14 @@ COPY . .
 
 # Build
 RUN mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
-    make -j$(nproc) && \
-    find . -name "libwhisper.so*" -exec cp {} bin/ \; && \
-    find . -name "libggml*.so*" -exec cp {} bin/ \;
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_TENSORRT=ON && \
+    make -j$(nproc)
+
+# Create TensorRT cache directory
+RUN mkdir -p /app/build/bin/tensorrt_cache
 
 # 2. Runtime Stage
-FROM ubuntu:22.04 AS runtime
+FROM nvcr.io/nvidia/tensorrt:23.10-py3 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HF_HOME=/app/models/hf_cache
 
@@ -46,18 +47,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 python3-pip \
     libswscale5 libswresample3 libavcodec58 libavformat58 libavutil56 libavfilter7 \
     libcurl4 libopencv-core4.5d ffmpeg \
-    && pip install --no-cache-dir -U yt-dlp transformers \
+    && pip install --no-cache-dir -U yt-dlp transformers faster-whisper \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 ENV LD_LIBRARY_PATH=/app/third_party/onnxruntime/lib:$LD_LIBRARY_PATH
 
 COPY --from=builder /app/build/SearvidsServer /app/SearvidsServer
-COPY --from=builder /app/build/bin/whisper-cli /app/whisper-cli
 COPY --from=builder /app/src/tokenizer.py /app/tokenizer.py
-# Copy shared libraries for whisper
-COPY --from=builder /app/build/bin/libwhisper.so* /usr/lib/
-COPY --from=builder /app/build/bin/libggml*.so* /usr/lib/
+COPY --from=builder /app/src/whisper_ct2.py /app/whisper_ct2.py
 COPY --from=builder /app/third_party/onnxruntime /app/third_party/onnxruntime
 
 RUN echo "/app/third_party/onnxruntime/lib" > /etc/ld.so.conf.d/onnxruntime.conf && ldconfig
