@@ -133,7 +133,7 @@ void analyze_video_async(VideoSession& sess) {
                             sess.indexed_visual_frames++;
                         } catch (...) {}
                     },
-                    2.0, 0, 0, 0
+                    2.0, 0, 0, 0, 224, 224
                 );
                 
                 std::cout << "[" << sess.video_id << "] Indexed " << sess.indexed_visual_frames << " visual frames" << std::endl;

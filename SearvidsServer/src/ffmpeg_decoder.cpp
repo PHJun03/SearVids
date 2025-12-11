@@ -597,7 +597,9 @@ void extract_frames_with_callback(const std::string& video_path,
                                   double interval_seconds,
                                   int max_frames,
                                   int64_t start_time_ms,
-                                  int64_t end_time_ms) {
+                                  int64_t end_time_ms,
+                                  int target_width,
+                                  int target_height) {
     init_ffmpeg();
 
     // Get video info first
@@ -662,10 +664,14 @@ void extract_frames_with_callback(const std::string& video_path,
         throw std::runtime_error("Failed to open decoder: " + std::string(e.what()));
     }
 
-    // Setup SwsContext for RGB conversion
+    // Determine output dimensions
+    int dst_width = (target_width > 0) ? target_width : codec_ctx->width;
+    int dst_height = (target_height > 0) ? target_height : codec_ctx->height;
+
+    // Setup SwsContext for RGB conversion and resizing
     SwsContext* sws_ctx = sws_getContext(
         codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
-        codec_ctx->width, codec_ctx->height, AV_PIX_FMT_RGB24,
+        dst_width, dst_height, AV_PIX_FMT_RGB24,
         SWS_BILINEAR, nullptr, nullptr, nullptr
     );
 
@@ -710,22 +716,22 @@ void extract_frames_with_callback(const std::string& video_path,
                 while (current_target_idx < timestamps.size() && 
                        frame_ms >= timestamps[current_target_idx]) {
                     
-                    // Convert to RGB24
+                    // Convert to RGB24 and resize
                     int rgb_size = av_image_get_buffer_size(
                         AV_PIX_FMT_RGB24, 
-                        frame->width, 
-                        frame->height, 
+                        dst_width, 
+                        dst_height, 
                         1
                     );
 
                     FrameData frame_data;
                     frame_data.rgb_data.resize(rgb_size);
-                    frame_data.width = frame->width;
-                    frame_data.height = frame->height;
+                    frame_data.width = dst_width;
+                    frame_data.height = dst_height;
                     frame_data.timestamp_ms = frame_ms;
 
                     uint8_t* rgb_ptrs[4] = {frame_data.rgb_data.data(), nullptr, nullptr, nullptr};
-                    int rgb_linesizes[4] = {frame->width * 3, 0, 0, 0};
+                    int rgb_linesizes[4] = {dst_width * 3, 0, 0, 0};
 
                     sws_scale(
                         sws_ctx,
@@ -765,7 +771,9 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
                                       double interval_seconds,
                                       int max_frames,
                                       int64_t start_time_ms,
-                                      int64_t end_time_ms) {
+                                      int64_t end_time_ms,
+                                      int target_width,
+                                      int target_height) {
     std::vector<FrameData> results;
     extract_frames_with_callback(
         video_path,
@@ -775,7 +783,9 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
         interval_seconds,
         max_frames,
         start_time_ms,
-        end_time_ms
+        end_time_ms,
+        target_width,
+        target_height
     );
     return results;
 }

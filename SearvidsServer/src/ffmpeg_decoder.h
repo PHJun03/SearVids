@@ -60,7 +60,9 @@ std::vector<FrameData> extract_frames(const std::string& video_path,    // Input
                                       double interval_seconds = 2.0,    // Time interval between extracted frames (default: 2.0 seconds)
                                       int max_frames = 0,                // Maximum number of frames to extract (0 = no limit)
                                       int64_t start_time_ms = 0,        // Start time in milliseconds (default: 0)
-                                      int64_t end_time_ms = 0);         // End time in milliseconds (0 = until end)
+                                      int64_t end_time_ms = 0,          // End time in milliseconds (0 = until end)
+                                      int target_width = -1,            // Target width for resizing (-1 = original width)
+                                      int target_height = -1);          // Target height for resizing (-1 = original height)
 
 // Extract video frames with callback (streaming)
 void extract_frames_with_callback(const std::string& video_path,
@@ -68,7 +70,9 @@ void extract_frames_with_callback(const std::string& video_path,
                                   double interval_seconds = 2.0,
                                   int max_frames = 0,
                                   int64_t start_time_ms = 0,
-                                  int64_t end_time_ms = 0);
+                                  int64_t end_time_ms = 0,
+                                  int target_width = -1,
+                                  int target_height = -1);
 
 // Extract a single frame at specific timestamp
 FrameData extract_frame_at(const std::string& video_path,   // Input video file path
