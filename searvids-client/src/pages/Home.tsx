@@ -3,7 +3,7 @@
  * All rights reserved.
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
 import { Search, Video, ArrowRight } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
@@ -130,12 +130,47 @@ export default function Home() {
     placeholderData: keepPreviousData,
   });
 
+  const mergedResults = useMemo(() => {
+    const results = searchData?.results ?? [];
+    if (!results.length) return [];
+
+    // Sort by start time
+    const sortedResults = [...results].sort((a, b) => a.start_time - b.start_time);
+
+    // Merge overlapping results
+    const merged: { start: number; end: number; items: typeof results }[] = [];
+    if (sortedResults.length > 0) {
+      let currentGroup = {
+        start: sortedResults[0].start_time,
+        end: sortedResults[0].end_time,
+        items: [sortedResults[0]]
+      };
+      
+      for (let i = 1; i < sortedResults.length; i++) {
+        const item = sortedResults[i];
+        // Check overlap or contiguous (within 3.0s tolerance)
+        if (item.start_time <= currentGroup.end + 3.0) {
+          currentGroup.end = Math.max(currentGroup.end, item.end_time);
+          currentGroup.items.push(item);
+        } else {
+          merged.push(currentGroup);
+          currentGroup = {
+            start: item.start_time,
+            end: item.end_time,
+            items: [item]
+          };
+        }
+      }
+      merged.push(currentGroup);
+    }
+    return merged;
+  }, [searchData]);
+
   const renderChapters = () => {
     if (isSearching && !searchData) return <p className="text-blue-200">Searching chapters...</p>;
     if (searchError) return <Error message="Failed to load chapters." />;
-    const results = searchData?.results ?? [];
     
-    if (!results.length) {
+    if (!mergedResults.length) {
       if (isSearching) return <p className="text-blue-200">Searching chapters...</p>;
       // Only show "No results" if we are not searching and have no results, 
       // but also check if we have started analysis.
@@ -146,36 +181,6 @@ export default function Home() {
           <p className="text-gray-400">No results found yet.</p>
         </div>
       );
-    }
-
-    // Sort by start time
-    const sortedResults = [...results].sort((a, b) => a.start_time - b.start_time);
-
-    // Merge overlapping results
-    const mergedResults: { start: number; end: number; items: typeof results }[] = [];
-    if (sortedResults.length > 0) {
-      let currentGroup = {
-        start: sortedResults[0].start_time,
-        end: sortedResults[0].end_time,
-        items: [sortedResults[0]]
-      };
-      
-      for (let i = 1; i < sortedResults.length; i++) {
-        const item = sortedResults[i];
-        // Check overlap or contiguous (within 1.0s tolerance)
-        if (item.start_time <= currentGroup.end + 1.0) {
-          currentGroup.end = Math.max(currentGroup.end, item.end_time);
-          currentGroup.items.push(item);
-        } else {
-          mergedResults.push(currentGroup);
-          currentGroup = {
-            start: item.start_time,
-            end: item.end_time,
-            items: [item]
-          };
-        }
-      }
-      mergedResults.push(currentGroup);
     }
 
     return (
@@ -197,7 +202,7 @@ export default function Home() {
           const hasVisual = visualItems.length > 0;
 
           return (
-            <div key={`group-${group.start}-${group.end}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
+            <div key={`group-${group.start}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
               <img
                 className="w-20 aspect-video object-cover rounded"
                 src={videoApi.getThumbnailUrl(videoId!, thumbnailItem.start_time)}
