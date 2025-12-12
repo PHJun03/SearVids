@@ -99,192 +99,411 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
     auto& sess = *sess_ptr;
     sess.analyzing = true;
     sess.started_at = std::chrono::system_clock::now();
-    sess.current_stage = "downloading";
+    sess.current_stage = "initializing";
     sess.progress_percent = 0;
 
     try {
-        // 1) Download video (0-10%)
         if (!downloader::is_valid_url(sess.source_url)) {
             throw std::runtime_error("Invalid URL");
         }
-        auto filename = downloader::extract_filename(sess.source_url);
-        if (filename.empty()) filename = "input.mp4";
-        std::string out = std::string("data/") + sess.video_id + "_" + filename;
 
-        std::cout << "[" << sess.video_id << "] Downloading: " << sess.source_url << std::endl;
-
-        bool ok = downloader::download_with_retry(sess.source_url, out, 3);
-        if (!ok) throw std::runtime_error("Download failed after 3 retries");
+        // Try to get duration for chunk-based processing
+        std::cout << "[" << sess.video_id << "] Getting video duration..." << std::endl;
+        int64_t total_duration_sec = downloader::get_duration(sess.source_url);
         
-        sess.local_path = out;
-        sess.progress_percent = 10;
-        std::cout << "[" << sess.video_id << "] Download complete: " << out << std::endl;
-
-        // 2) Probe video metadata (10-15%)
-        sess.current_stage = "probing";
-        std::cout << "[" << sess.video_id << "] Probing video metadata..." << std::endl;
-        
-        auto info = ffmpeg_decoder::probe(out);
-        
-        if (!info.has_video && !info.has_audio) {
-            throw std::runtime_error("No valid media streams found");
-        }
-        
-        sess.duration_ms = info.duration_ms;
-        sess.nb_frames = (info.nb_frames > 0) ? info.nb_frames : ffmpeg_decoder::count_frames(out);
-        sess.progress_percent = 15;
-
-        std::cout << "[" << sess.video_id << "] Video info: "
-                  << "duration=" << sess.duration_ms << "ms, "
-                  << "frames=" << sess.nb_frames << ", "
-                  << "has_audio=" << info.has_audio 
-                  << ", has_video=" << info.has_video << std::endl;
-
-        sess.current_stage = "processing_content";
-        
-        // Parallel processing: Visual (30%) + Audio (45%)
-        // Base progress: 15%
-        // Visual: 0 -> 30
-        // Audio: 0 -> 45
-        
-        auto visual_future = std::async(std::launch::async, [&sess, &info]() {
-            if (!info.has_video) return;
-            try {
-                std::cout << "[" << sess.video_id << "] Extracting visual frames..." << std::endl;
-                auto& clip = get_clip();
+        // If duration is available, use Chunk-Based Processing
+        if (total_duration_sec > 0) {
+            sess.duration_ms = total_duration_sec * 1000;
+            std::cout << "[" << sess.video_id << "] Chunk-based analysis. Total duration: " << total_duration_sec << "s" << std::endl;
+            
+            const int CHUNK_SIZE = 180; // 3 minutes
+            int current_start = 0;
+            
+            // Pipeline: Download N+1 while Analyzing N
+            std::future<void> last_analysis_future;
+            
+            while (current_start < total_duration_sec) {
+                int current_end = std::min((int)total_duration_sec, current_start + CHUNK_SIZE);
                 
-                ffmpeg_decoder::extract_frames_with_callback(
-                    sess.local_path,
-                    [&sess, &clip](const ffmpeg_decoder::FrameData& frame) {
-                        try {
-                            auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
-                            hnsw_index::add(
-                                emb,
-                                static_cast<float>(frame.timestamp_ms) / 1000.0f,
-                                static_cast<float>(frame.timestamp_ms) / 1000.0f + 1.0f,
-                                "visual_frame"
-                            );
-                            sess.indexed_visual_frames++;
-                            
-                            // Update progress (Visual is approx 30% of total, from 15% to 45%)
-                            if (sess.nb_frames > 0) {
-                                double progress = (double)frame.timestamp_ms / (double)sess.duration_ms;
-                                if (progress > 1.0) progress = 1.0;
-                                int p = 15 + (int)(30.0 * progress);
-                                if (p > sess.progress_percent) sess.progress_percent = p;
-                            }
-                            
-                            // Broadcast update
-                            broadcast_status(sess.video_id, sess);
-                        } catch (...) {}
-                    },
-                    2.0, 0, 0, 0, 224, 224
-                );
+                // Update stage
+                sess.current_stage = "processing_chunk_" + std::to_string(current_start) + "_" + std::to_string(current_end);
+                broadcast_status(sess.video_id, sess);
                 
-                std::cout << "[" << sess.video_id << "] Indexed " << sess.indexed_visual_frames << " visual frames" << std::endl;
-            } catch (const std::exception& e) {
-                std::cerr << "[" << sess.video_id << "] Visual processing failed: " << e.what() << std::endl;
-            }
-        });
-
-        auto audio_future = std::async(std::launch::async, [&sess, &info]() {
-            if (!info.has_audio) return;
-            try {
-                std::string audio_path = "data/" + sess.video_id + "_audio.wav";
-                std::cout << "[" << sess.video_id << "] Extracting audio..." << std::endl;
+                // Download Chunk (Blocking, but runs in parallel with last_analysis_future)
+                std::string chunk_filename = sess.video_id + "_chunk_" + std::to_string(current_start) + ".mp4";
+                std::string chunk_path = "data/" + chunk_filename;
                 
-                if (!ffmpeg_decoder::extract_audio(sess.local_path, audio_path, 16000, 1, nullptr)) {
-                    throw std::runtime_error("Failed to extract audio");
+                std::cout << "[" << sess.video_id << "] Downloading chunk " << current_start << "-" << current_end << "s" << std::endl;
+                if (!downloader::download_section(sess.source_url, chunk_path, current_start, current_end)) {
+                    if (current_start == 0) throw std::runtime_error("Failed to download first chunk");
+                    std::cerr << "Failed to download chunk " << current_start << "-" << current_end << ", stopping." << std::endl;
+                    break;
                 }
                 
-                std::cout << "[" << sess.video_id << "] Starting transcription (CTranslate2)..." << std::endl;
+                // Wait for previous analysis to finish before starting new one
+                if (last_analysis_future.valid()) {
+                    last_analysis_future.get(); // Propagate exceptions
+                }
                 
-                // Setup Whisper (Use Python script with faster-whisper)
-                g_whisper.setCliExecutable("python3");
-                g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
-                
-                // Parse and Index incrementally
-                std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
-                auto& clip = get_clip();
-                std::string buffer;
-                
-                g_whisper.transcribe_with_callback(audio_path, 
-                    [&sess, &clip, &re, &buffer](const std::string& chunk) {
-                        buffer += chunk;
-                        size_t pos;
-                        while ((pos = buffer.find('\n')) != std::string::npos) {
-                            std::string line = buffer.substr(0, pos);
-                            buffer.erase(0, pos + 1);
-                            
-                            if (!line.empty() && line.back() == '\r') line.pop_back();
-                            
-                            // Debug: print all lines to debug
-                            if (line.find("-->") == std::string::npos) {
-                                std::cout << "[Whisper Log] " << line << std::endl;
-                            }
-
-                            std::smatch match;
-                            if (std::regex_search(line, match, re)) {
-                                try {
-                                    float start = std::stof(match[1]) * 3600 + std::stof(match[2]) * 60 + std::stof(match[3]) + std::stof(match[4]) / 1000.0f;
-                                    float end = std::stof(match[5]) * 3600 + std::stof(match[6]) * 60 + std::stof(match[7]) + std::stof(match[8]) / 1000.0f;
-                                    std::string text = match[9];
-                                    // trim
-                                    text.erase(0, text.find_first_not_of(" \t"));
-                                    text.erase(text.find_last_not_of(" \t") + 1);
-                                    
-                                    if (!text.empty()) {
-                                        auto emb = clip.encodeText(text);
-                                        hnsw_index::add(emb, start, end, text);
-                                        sess.indexed_audio_segments++;
-                                        
-                                        // Update progress (Audio is approx 45% of total, from 45% to 90%)
-                                        // We use end time to estimate progress
-                                        if (sess.duration_ms > 0) {
-                                            double progress = (double)(end * 1000.0) / (double)sess.duration_ms;
-                                            if (progress > 1.0) progress = 1.0;
-                                            // Audio part starts at 15% (parallel with visual), but let's just add to current?
-                                            // No, progress_percent is shared.
-                                            // Let's say Visual contributes 0-30 points, Audio contributes 0-45 points.
-                                            // Base is 15.
-                                            // We can't easily sum them without separate counters.
-                                            // But we can just take the MAX of (Visual Progress) and (Audio Progress + Offset)?
-                                            // Or just update if greater.
-                                            
-                                            // Let's assume Audio drives the main progress from 45% to 90% if it's slower?
-                                            // Or just use a simple max logic.
-                                            int p = 15 + 30 + (int)(45.0 * progress); // 45% to 90%
-                                            // This assumes Visual is done? No.
-                                            
-                                            // Let's just update progress based on time processed, regardless of stream.
-                                            // Since they run in parallel, the one that is further ahead in time might drive it.
-                                            // But Visual is usually slower.
-                                            
-                                            // Let's just update if p > current.
-                                            if (p > sess.progress_percent) sess.progress_percent = p;
-                                        }
-                                        
-                                        // Broadcast update
-                                        broadcast_status(sess.video_id, sess);
+                // Start Analysis (Async)
+                // Capture by value to ensure variables are valid
+                last_analysis_future = std::async(std::launch::async, [=, &sess]() {
+                    try {
+                        // Probe Chunk
+                        auto info = ffmpeg_decoder::probe(chunk_path);
+                        
+                        // Parallel Analysis (Visual + Audio) within the chunk
+                        auto visual_future = std::async(std::launch::async, [&sess, &info, chunk_path, current_start, total_duration_sec]() {
+                            if (!info.has_video) return;
+                            try {
+                                auto& clip = get_clip();
+                                
+                                // Pipeline Parallelism (Producer-Consumer) for Chunk
+                                struct QueueItem {
+                                    ffmpeg_decoder::FrameData frame;
+                                    bool is_end = false;
+                                };
+                                struct TSQueue {
+                                    std::queue<QueueItem> q;
+                                    std::mutex m;
+                                    std::condition_variable cv;
+                                    void push(QueueItem item) {
+                                        std::lock_guard<std::mutex> lk(m);
+                                        q.push(std::move(item));
+                                        cv.notify_one();
                                     }
-                                } catch (...) {}
+                                    QueueItem pop() {
+                                        std::unique_lock<std::mutex> lk(m);
+                                        cv.wait(lk, [this]{ return !q.empty(); });
+                                        QueueItem item = std::move(q.front());
+                                        q.pop();
+                                        return item;
+                                    }
+                                } frame_queue;
+
+                                auto consumer_thread = std::thread([&sess, &clip, &frame_queue, current_start, total_duration_sec]() {
+                                    while (true) {
+                                        auto item = frame_queue.pop();
+                                        if (item.is_end) break;
+                                        try {
+                                            auto& frame = item.frame;
+                                            int64_t real_timestamp_ms = frame.timestamp_ms + (current_start * 1000);
+                                            
+                                            auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
+                                            hnsw_index::add(
+                                                emb,
+                                                static_cast<float>(real_timestamp_ms) / 1000.0f,
+                                                static_cast<float>(real_timestamp_ms) / 1000.0f + 1.0f,
+                                                "visual_frame"
+                                            );
+                                            sess.indexed_visual_frames++;
+                                            
+                                            double progress = (double)real_timestamp_ms / (double)(total_duration_sec * 1000);
+                                            if (progress > 1.0) progress = 1.0;
+                                            int p = (int)(progress * 100.0);
+                                            if (p > sess.progress_percent) sess.progress_percent = p;
+                                            
+                                            broadcast_status(sess.video_id, sess);
+                                        } catch (...) {}
+                                    }
+                                });
+
+                                ffmpeg_decoder::extract_frames_with_callback(
+                                    chunk_path,
+                                    [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
+                                        frame_queue.push({frame, false});
+                                    },
+                                    2.0, 0, 0, 0, 224, 224
+                                );
+                                frame_queue.push({{}, true});
+                                if (consumer_thread.joinable()) consumer_thread.join();
+                                
+                            } catch (...) {}
+                        });
+
+                        auto audio_future = std::async(std::launch::async, [&sess, &info, chunk_path, current_start, total_duration_sec]() {
+                            if (!info.has_audio) return;
+                            try {
+                                std::string audio_path = chunk_path + ".wav";
+                                if (!ffmpeg_decoder::extract_audio(chunk_path, audio_path, 16000, 1, nullptr)) return;
+                                
+                                g_whisper.setCliExecutable("python3");
+                                g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
+                                
+                                std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
+                                auto& clip = get_clip();
+                                std::string buffer;
+                                
+                                g_whisper.transcribe_with_callback(audio_path, 
+                                    [&sess, &clip, &re, &buffer, current_start, total_duration_sec](const std::string& chunk) {
+                                        buffer += chunk;
+                                        size_t pos;
+                                        while ((pos = buffer.find('\n')) != std::string::npos) {
+                                            std::string line = buffer.substr(0, pos);
+                                            buffer.erase(0, pos + 1);
+                                            if (!line.empty() && line.back() == '\r') line.pop_back();
+                                            
+                                            std::smatch match;
+                                            if (std::regex_search(line, match, re)) {
+                                                try {
+                                                    float start = std::stof(match[1]) * 3600 + std::stof(match[2]) * 60 + std::stof(match[3]) + std::stof(match[4]) / 1000.0f;
+                                                    float end = std::stof(match[5]) * 3600 + std::stof(match[6]) * 60 + std::stof(match[7]) + std::stof(match[8]) / 1000.0f;
+                                                    std::string text = match[9];
+                                                    
+                                                    start += current_start;
+                                                    end += current_start;
+                                                    
+                                                    text.erase(0, text.find_first_not_of(" \t"));
+                                                    text.erase(text.find_last_not_of(" \t") + 1);
+                                                    
+                                                    if (!text.empty()) {
+                                                        auto emb = clip.encodeText(text);
+                                                        hnsw_index::add(emb, start, end, text);
+                                                        sess.indexed_audio_segments++;
+                                                        
+                                                        double progress = (double)(end * 1000.0) / (double)(total_duration_sec * 1000);
+                                                        if (progress > 1.0) progress = 1.0;
+                                                        int p = (int)(progress * 100.0);
+                                                        if (p > sess.progress_percent) sess.progress_percent = p;
+                                                        
+                                                        broadcast_status(sess.video_id, sess);
+                                                    }
+                                                } catch (...) {}
+                                            }
+                                        }
+                                    }, 
+                                    600
+                                );
+                                std::filesystem::remove(audio_path);
+                            } catch (...) {}
+                        });
+
+                        visual_future.wait();
+                        audio_future.wait();
+                        
+                        std::filesystem::remove(chunk_path);
+                    } catch (const std::exception& e) {
+                        std::cerr << "Error analyzing chunk " << current_start << ": " << e.what() << std::endl;
+                    }
+                });
+                
+                current_start += CHUNK_SIZE;
+            }
+            
+            // Wait for the final chunk analysis
+            if (last_analysis_future.valid()) {
+                last_analysis_future.get();
+            }
+            
+        } else {
+            // Fallback to Original Logic (Full Download)
+            auto filename = downloader::extract_filename(sess.source_url);
+            if (filename.empty()) filename = "input.mp4";
+            std::string out = std::string("data/") + sess.video_id + "_" + filename;
+
+            std::cout << "[" << sess.video_id << "] Downloading: " << sess.source_url << std::endl;
+
+            bool ok = downloader::download_with_retry(sess.source_url, out, 3);
+            if (!ok) throw std::runtime_error("Download failed after 3 retries");
+            
+            sess.local_path = out;
+            sess.progress_percent = 10;
+            std::cout << "[" << sess.video_id << "] Download complete: " << out << std::endl;
+
+            // 2) Probe video metadata (10-15%)
+            sess.current_stage = "probing";
+            std::cout << "[" << sess.video_id << "] Probing video metadata..." << std::endl;
+            
+            auto info = ffmpeg_decoder::probe(out);
+            
+            if (!info.has_video && !info.has_audio) {
+                throw std::runtime_error("No valid media streams found");
+            }
+            
+            sess.duration_ms = info.duration_ms;
+            sess.nb_frames = (info.nb_frames > 0) ? info.nb_frames : ffmpeg_decoder::count_frames(out);
+            sess.progress_percent = 15;
+
+            std::cout << "[" << sess.video_id << "] Video info: "
+                    << "duration=" << sess.duration_ms << "ms, "
+                    << "frames=" << sess.nb_frames << ", "
+                    << "has_audio=" << info.has_audio 
+                    << ", has_video=" << info.has_video << std::endl;
+
+            sess.current_stage = "processing_content";
+            
+            // Parallel processing: Visual (30%) + Audio (45%)
+            auto visual_future = std::async(std::launch::async, [&sess, &info]() {
+                if (!info.has_video) return;
+                try {
+                    std::cout << "[" << sess.video_id << "] Extracting visual frames..." << std::endl;
+                    auto& clip = get_clip();
+                    
+                    // Pipeline Parallelism: Producer (FFmpeg) -> Queue -> Consumer (CLIP)
+                    struct QueueItem {
+                        ffmpeg_decoder::FrameData frame;
+                        bool is_end = false;
+                    };
+                    
+                    // Simple thread-safe queue
+                    struct TSQueue {
+                        std::queue<QueueItem> q;
+                        std::mutex m;
+                        std::condition_variable cv;
+                        
+                        void push(QueueItem item) {
+                            std::lock_guard<std::mutex> lk(m);
+                            q.push(std::move(item));
+                            cv.notify_one();
+                        }
+                        
+                        QueueItem pop() {
+                            std::unique_lock<std::mutex> lk(m);
+                            cv.wait(lk, [this]{ return !q.empty(); });
+                            QueueItem item = std::move(q.front());
+                            q.pop();
+                            return item;
+                        }
+                    } frame_queue;
+
+                    // Consumer Thread: CLIP Inference & Indexing
+                    auto consumer_thread = std::thread([&sess, &clip, &frame_queue]() {
+                        while (true) {
+                            auto item = frame_queue.pop();
+                            if (item.is_end) break;
+                            
+                            try {
+                                auto& frame = item.frame;
+                                auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
+                                hnsw_index::add(
+                                    emb,
+                                    static_cast<float>(frame.timestamp_ms) / 1000.0f,
+                                    static_cast<float>(frame.timestamp_ms) / 1000.0f + 1.0f,
+                                    "visual_frame"
+                                );
+                                sess.indexed_visual_frames++;
+                                
+                                // Update progress (Visual is approx 30% of total, from 15% to 45%)
+                                if (sess.nb_frames > 0) {
+                                    double progress = (double)frame.timestamp_ms / (double)sess.duration_ms;
+                                    if (progress > 1.0) progress = 1.0;
+                                    int p = 15 + (int)(30.0 * progress);
+                                    if (p > sess.progress_percent) sess.progress_percent = p;
+                                }
+                                
+                                // Broadcast update
+                                broadcast_status(sess.video_id, sess);
+                            } catch (const std::exception& e) {
+                                std::cerr << "[" << sess.video_id << "] CLIP inference failed: " << e.what() << std::endl;
                             }
                         }
-                    }, 
-                    600
-                );
-                
-                std::filesystem::remove(audio_path);
-                std::cout << "[" << sess.video_id << "] Indexed " << sess.indexed_audio_segments << " audio segments" << std::endl;
+                    });
 
-            } catch (const std::exception& e) {
-                std::cerr << "[" << sess.video_id << "] Audio processing failed: " << e.what() << std::endl;
-            }
-        });
+                    // Producer: FFmpeg Decoding
+                    ffmpeg_decoder::extract_frames_with_callback(
+                        sess.local_path,
+                        [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
+                            frame_queue.push({frame, false});
+                        },
+                        2.0, 0, 0, 0, 224, 224
+                    );
+                    
+                    // Signal end
+                    frame_queue.push({{}, true});
+                    
+                    // Wait for consumer
+                    if (consumer_thread.joinable()) {
+                        consumer_thread.join();
+                    }
+                    
+                    std::cout << "[" << sess.video_id << "] Indexed " << sess.indexed_visual_frames << " visual frames" << std::endl;
+                } catch (const std::exception& e) {
+                    std::cerr << "[" << sess.video_id << "] Visual processing failed: " << e.what() << std::endl;
+                }
+            });
 
-        // Wait for both
-        visual_future.wait();
-        audio_future.wait();
+            auto audio_future = std::async(std::launch::async, [&sess, &info]() {
+                if (!info.has_audio) return;
+                try {
+                    std::string audio_path = "data/" + sess.video_id + "_audio.wav";
+                    std::cout << "[" << sess.video_id << "] Extracting audio..." << std::endl;
+                    
+                    if (!ffmpeg_decoder::extract_audio(sess.local_path, audio_path, 16000, 1, nullptr)) {
+                        throw std::runtime_error("Failed to extract audio");
+                    }
+                    
+                    std::cout << "[" << sess.video_id << "] Starting transcription (CTranslate2)..." << std::endl;
+                    
+                    // Setup Whisper (Use Python script with faster-whisper)
+                    g_whisper.setCliExecutable("python3");
+                    g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
+                    
+                    // Parse and Index incrementally
+                    std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
+                    auto& clip = get_clip();
+                    std::string buffer;
+                    
+                    g_whisper.transcribe_with_callback(audio_path, 
+                        [&sess, &clip, &re, &buffer](const std::string& chunk) {
+                            buffer += chunk;
+                            size_t pos;
+                            while ((pos = buffer.find('\n')) != std::string::npos) {
+                                std::string line = buffer.substr(0, pos);
+                                buffer.erase(0, pos + 1);
+                                
+                                if (!line.empty() && line.back() == '\r') line.pop_back();
+                                
+                                // Debug: print all lines to debug
+                                if (line.find("-->") == std::string::npos) {
+                                    std::cout << "[Whisper Log] " << line << std::endl;
+                                }
+
+                                std::smatch match;
+                                if (std::regex_search(line, match, re)) {
+                                    try {
+                                        float start = std::stof(match[1]) * 3600 + std::stof(match[2]) * 60 + std::stof(match[3]) + std::stof(match[4]) / 1000.0f;
+                                        float end = std::stof(match[5]) * 3600 + std::stof(match[6]) * 60 + std::stof(match[7]) + std::stof(match[8]) / 1000.0f;
+                                        std::string text = match[9];
+                                        // trim
+                                        text.erase(0, text.find_first_not_of(" \t"));
+                                        text.erase(text.find_last_not_of(" \t") + 1);
+                                        
+                                        if (!text.empty()) {
+                                            auto emb = clip.encodeText(text);
+                                            hnsw_index::add(emb, start, end, text);
+                                            sess.indexed_audio_segments++;
+                                            
+                                            // Update progress (Audio is approx 45% of total, from 45% to 90%)
+                                            // We use end time to estimate progress
+                                            if (sess.duration_ms > 0) {
+                                                double progress = (double)(end * 1000.0) / (double)sess.duration_ms;
+                                                if (progress > 1.0) progress = 1.0;
+                                                int p = 15 + 30 + (int)(45.0 * progress); // 45% to 90%
+                                                if (p > sess.progress_percent) sess.progress_percent = p;
+                                            }
+                                            
+                                            // Broadcast update
+                                            broadcast_status(sess.video_id, sess);
+                                        }
+                                    } catch (...) {}
+                                }
+                            }
+                        }, 
+                        600
+                    );
+                    
+                    std::filesystem::remove(audio_path);
+                    std::cout << "[" << sess.video_id << "] Indexed " << sess.indexed_audio_segments << " audio segments" << std::endl;
+
+                } catch (const std::exception& e) {
+                    std::cerr << "[" << sess.video_id << "] Audio processing failed: " << e.what() << std::endl;
+                }
+            });
+
+            // Wait for both
+            visual_future.wait();
+            audio_future.wait();
+        }
 
         sess.progress_percent = 100;
         sess.current_stage = "completed";
@@ -313,6 +532,41 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
     }
     
     sess.analyzing = false;
+}
+
+SearchRequest parse_search_request(const std::string& body) {
+    SearchRequest req;
+    try {
+        auto j = nlohmann::json::parse(body);
+        if (j.contains("query")) req.query = j["query"];
+        if (j.contains("query_text")) req.query = j["query_text"];
+        if (j.contains("embedding") && j["embedding"].is_array()) {
+            req.embedding = j["embedding"].get<std::vector<float>>();
+        }
+        if (j.contains("topk")) req.topk = j["topk"];
+        if (j.contains("offset")) req.offset = j["offset"];
+        if (j.contains("min_similarity")) req.min_similarity = j["min_similarity"];
+        if (j.contains("search_type")) req.search_type = j["search_type"];
+    } catch (...) {}
+    return req;
+}
+
+crow::response create_search_response(const std::vector<SearchResult>& results) {
+    nlohmann::json j_results = nlohmann::json::array();
+    for (const auto& r : results) {
+        nlohmann::json item;
+        item["id"] = r.id;
+        item["start"] = r.start_time;
+        item["end"] = r.end_time;
+        item["text"] = r.caption;
+        item["score"] = r.similarity;
+        item["type"] = r.result_type.empty() ? (r.caption == "visual_frame" ? "visual" : "audio") : r.result_type;
+        j_results.push_back(item);
+    }
+    nlohmann::json j;
+    j["status"] = "success";
+    j["results"] = j_results;
+    return json_ok(j);
 }
 
 static std::vector<SearchResult> filter_results(const std::vector<hnsw_index::TimelineEntry>& raw_results, const std::string& query) {
@@ -727,58 +981,6 @@ void setup_routes(crow::SimpleApp& app) {
         res.add_header("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
         return res;
     });
-}
-
-
-SearchRequest parse_search_request(const std::string& body) {
-    SearchRequest req;
-    try {
-        auto json = nlohmann::json::parse(body);
-        
-        if (json.contains("query") && json["query"].is_string())
-            req.query = json["query"].get<std::string>();
-        else if (json.contains("query_text") && json["query_text"].is_string())
-            req.query = json["query_text"].get<std::string>();
-
-        req.topk = json.value("topk", 5);
-        req.offset = json.value("offset", 0);
-        req.min_similarity = json.value("min_similarity", 0.0f);
-        req.search_type = json.value("search_type", "both");
-        
-        if (json.contains("embedding") && json["embedding"].is_array()) {
-            req.embedding = json["embedding"].get<std::vector<float>>();
-        }
-    } catch (...) {
-        // keep defaults
-    }
-    return req;
-}
-
-crow::response create_search_response(const std::vector<SearchResult>& results) {
-    nlohmann::json json_results = nlohmann::json::array();
-    for (const auto& r : results) {
-        nlohmann::json item = nlohmann::json::object();
-        item["id"] = r.id;
-        item["start_time"] = r.start_time;
-        item["end_time"] = r.end_time;
-        item["caption"] = r.caption;
-        item["similarity"] = r.similarity;
-        json_results.push_back(item);
-    }
-    nlohmann::json out = nlohmann::json::object();
-    out["status"] = "ok";
-    out["count"] = static_cast<int>(results.size());
-    out["results"] = json_results;
-    return json_ok(out);
-}
-
-crow::response health_check() {
-    nlohmann::json j = nlohmann::json::object();
-    j["status"] = "ok";
-    j["service"] = "SearvidsServer";
-    j["index_size"] = static_cast<int>(hnsw_index::size());
-    j["whisper_cli_available"] = server_api::g_whisper.cli_available();
-    return json_ok(j);
 }
 
 } // namespace server_api

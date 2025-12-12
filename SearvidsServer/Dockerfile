@@ -46,7 +46,7 @@ ENV HF_HOME=/app/models/hf_cache
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 python3-pip \
     libswscale5 libswresample3 libavcodec58 libavformat58 libavutil56 libavfilter7 \
-    libcurl4 libopencv-core4.5d ffmpeg \
+    libcurl4 libopencv-core4.5d libopencv-imgcodecs4.5d libopencv-imgproc4.5d ffmpeg \
     && pip install --no-cache-dir -U yt-dlp transformers faster-whisper \
     && rm -rf /var/lib/apt/lists/*
 

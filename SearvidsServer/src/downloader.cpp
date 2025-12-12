@@ -270,4 +270,65 @@ bool download_with_retry(const std::string& url, const std::string& output_path,
     return false;
 }
 
+int64_t get_duration(const std::string& url) {
+    if (!is_ytdlp_available()) return -1;
+
+    std::string cmd = "yt-dlp --print duration --no-warnings \"" + url + "\"";
+    FILE* pipe = 
+#ifdef _WIN32
+        _popen(cmd.c_str(), "r");
+#else
+        popen(cmd.c_str(), "r");
+#endif
+    
+    if (!pipe) return -1;
+    
+    char buffer[128];
+    std::string result = "";
+    while (fgets(buffer, sizeof(buffer), pipe) != nullptr) {
+        result += buffer;
+    }
+    
+#ifdef _WIN32
+    _pclose(pipe);
+#else
+    pclose(pipe);
+#endif
+
+    try {
+        if (result.empty()) return -1;
+        return std::stoll(result);
+    } catch (...) {
+        return -1;
+    }
+}
+
+bool download_section(const std::string& url, const std::string& output_path, int start_sec, int end_sec) {
+    if (!is_ytdlp_available()) return false;
+
+    std::cout << "Downloading section " << start_sec << "-" << end_sec << "s..." << std::endl;
+    
+    std::filesystem::path path(output_path);
+    std::filesystem::create_directories(path.parent_path());
+    
+    // yt-dlp --download-sections "*start-end"
+    std::ostringstream cmd;
+    cmd << "yt-dlp -f \"best[ext=mp4]/best\" --no-playlist --no-warnings "
+        << "--download-sections \"*" << start_sec << "-" << end_sec << "\" "
+        << "-o \"" << output_path << "\" \"" << url << "\"";
+    
+#ifdef _WIN32
+    cmd << " >nul 2>&1";
+#else
+    cmd << " >/dev/null 2>&1";
+#endif
+    
+    int result = std::system(cmd.str().c_str());
+    
+    if (result != 0 || !std::filesystem::exists(output_path)) {
+        return false;
+    }
+    return true;
+}
+
 } // namespace downloader

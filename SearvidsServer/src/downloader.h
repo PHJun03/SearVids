@@ -50,4 +50,17 @@ bool download_with_retry(const std::string& url, const std::string& output_path,
  */
 bool is_ytdlp_available();
 
+/**
+ * Get video duration in seconds using yt-dlp
+ * Returns -1 on failure
+ */
+int64_t get_duration(const std::string& url);
+
+/**
+ * Download a specific section of the video
+ * start_sec: Start time in seconds
+ * end_sec: End time in seconds
+ */
+bool download_section(const std::string& url, const std::string& output_path, int start_sec, int end_sec);
+
 } // namespace downloader
