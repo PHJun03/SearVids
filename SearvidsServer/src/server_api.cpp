@@ -858,16 +858,17 @@ void setup_routes(crow::SimpleApp& app) {
         }
 
         try {
-            // Extract frame (resize to 320x180 for thumbnail)
-            auto frame = ffmpeg_decoder::extract_frame_at(path, actual_ts, true, 320, 180);
+            // Extract frame (resize to 256x144 for thumbnail, optimized size)
+            auto frame = ffmpeg_decoder::extract_frame_at(path, actual_ts, true, 256, 144);
             
             // Convert to OpenCV Mat
             cv::Mat img(frame.height, frame.width, CV_8UC3, frame.rgb_data.data());
             cv::cvtColor(img, img, cv::COLOR_RGB2BGR); // OpenCV uses BGR
 
-            // Encode to JPEG
+            // Encode to JPEG with 70% quality
+            std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 70};
             std::vector<uchar> buf;
-            cv::imencode(".jpg", img, buf);
+            cv::imencode(".jpg", img, buf, params);
 
             std::string s(buf.begin(), buf.end());
             crow::response res(s);
@@ -909,11 +910,14 @@ void setup_routes(crow::SimpleApp& app) {
         }
 
         try {
-            auto frame = ffmpeg_decoder::extract_frame_at(path, actual_ts, true, 320, 180);
+            auto frame = ffmpeg_decoder::extract_frame_at(path, actual_ts, true, 256, 144);
             cv::Mat img(frame.height, frame.width, CV_8UC3, frame.rgb_data.data());
             cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
+            
+            std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 70};
             std::vector<uchar> buf;
-            cv::imencode(".jpg", img, buf);
+            cv::imencode(".jpg", img, buf, params);
+            
             std::string s(buf.begin(), buf.end());
             crow::response res(s);
             res.add_header("Content-Type", "image/jpeg");

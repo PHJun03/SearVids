@@ -199,7 +199,7 @@ export default function Home() {
           return (
             <div key={`group-${group.start}-${group.end}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
               <img
-                className="w-32 h-20 object-cover rounded"
+                className="w-20 aspect-video object-cover rounded"
                 src={videoApi.getThumbnailUrl(videoId!, thumbnailItem.start_time)}
                 alt="thumbnail"
               />
