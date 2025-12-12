@@ -162,8 +162,8 @@ export default function Home() {
       
       for (let i = 1; i < sortedResults.length; i++) {
         const item = sortedResults[i];
-        // Check overlap (using < end_time for simple overlap)
-        if (item.start_time < currentGroup.end) {
+        // Check overlap or contiguous (within 1.0s tolerance)
+        if (item.start_time <= currentGroup.end + 1.0) {
           currentGroup.end = Math.max(currentGroup.end, item.end_time);
           currentGroup.items.push(item);
         } else {
