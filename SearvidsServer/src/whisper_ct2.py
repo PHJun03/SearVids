@@ -6,6 +6,10 @@ import os
 import math
 from faster_whisper import WhisperModel
 
+# Force stdout to use UTF-8
+if sys.stdout.encoding != 'utf-8':
+    sys.stdout.reconfigure(encoding='utf-8')
+
 def format_timestamp(seconds):
     hours = math.floor(seconds / 3600)
     seconds %= 3600

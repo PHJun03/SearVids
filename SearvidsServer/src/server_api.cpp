@@ -213,7 +213,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                     [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
                                         frame_queue.push({frame, false});
                                     },
-                                    2.0, 0, 0, 0, 224, 224
+                                    2.0, 0, 0, 0, 224, 224, true
                                 );
                                 frame_queue.push({{}, true});
                                 if (consumer_thread.joinable()) consumer_thread.join();
@@ -281,7 +281,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                         visual_future.wait();
                         audio_future.wait();
                         
-                        std::filesystem::remove(chunk_path);
+                        // std::filesystem::remove(chunk_path); // Keep chunks for thumbnails
                     } catch (const std::exception& e) {
                         std::cerr << "Error analyzing chunk " << current_start << ": " << e.what() << std::endl;
                     }
@@ -405,7 +405,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                         [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
                             frame_queue.push({frame, false});
                         },
-                        2.0, 0, 0, 0, 224, 224
+                        2.0, 0, 0, 0, 224, 224, true
                     );
                     
                     // Signal end
@@ -556,9 +556,9 @@ crow::response create_search_response(const std::vector<SearchResult>& results) 
     for (const auto& r : results) {
         nlohmann::json item;
         item["id"] = r.id;
-        item["start"] = r.start_time;
-        item["end"] = r.end_time;
-        item["text"] = r.caption;
+        item["start_time"] = r.start_time;
+        item["end_time"] = r.end_time;
+        item["caption"] = r.caption;
         item["score"] = r.similarity;
         item["type"] = r.result_type.empty() ? (r.caption == "visual_frame" ? "visual" : "audio") : r.result_type;
         j_results.push_back(item);
@@ -845,9 +845,21 @@ void setup_routes(crow::SimpleApp& app) {
         if (!ts_str) return crow::response(400, "timestamp required");
         int64_t ts = std::stoll(ts_str);
 
+        // Handle chunked videos
+        int64_t actual_ts = ts;
+        if (path.empty() || !std::filesystem::exists(path)) {
+            int chunk_size = 180; // 3 minutes
+            int chunk_start = (ts / 1000 / chunk_size) * chunk_size;
+            std::string chunk_path = "data/" + video_id + "_chunk_" + std::to_string(chunk_start) + ".mp4";
+            if (std::filesystem::exists(chunk_path)) {
+                path = chunk_path;
+                actual_ts = ts % (chunk_size * 1000);
+            }
+        }
+
         try {
             // Extract frame (resize to 320x180 for thumbnail)
-            auto frame = ffmpeg_decoder::extract_frame_at(path, ts, true, 320, 180);
+            auto frame = ffmpeg_decoder::extract_frame_at(path, actual_ts, true, 320, 180);
             
             // Convert to OpenCV Mat
             cv::Mat img(frame.height, frame.width, CV_8UC3, frame.rgb_data.data());
@@ -884,8 +896,20 @@ void setup_routes(crow::SimpleApp& app) {
         if (!ts_str) return crow::response(400, "timestamp required");
         int64_t ts = std::stoll(ts_str);
 
+        // Handle chunked videos
+        int64_t actual_ts = ts;
+        if (path.empty() || !std::filesystem::exists(path)) {
+            int chunk_size = 180; // 3 minutes
+            int chunk_start = (ts / 1000 / chunk_size) * chunk_size;
+            std::string chunk_path = "data/" + video_id + "_chunk_" + std::to_string(chunk_start) + ".mp4";
+            if (std::filesystem::exists(chunk_path)) {
+                path = chunk_path;
+                actual_ts = ts % (chunk_size * 1000);
+            }
+        }
+
         try {
-            auto frame = ffmpeg_decoder::extract_frame_at(path, ts, true, 320, 180);
+            auto frame = ffmpeg_decoder::extract_frame_at(path, actual_ts, true, 320, 180);
             cv::Mat img(frame.height, frame.width, CV_8UC3, frame.rgb_data.data());
             cv::cvtColor(img, img, cv::COLOR_RGB2BGR);
             std::vector<uchar> buf;

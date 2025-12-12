@@ -605,7 +605,8 @@ void extract_frames_with_callback(const std::string& video_path,
                                   int64_t start_time_ms,
                                   int64_t end_time_ms,
                                   int target_width,
-                                  int target_height) {
+                                  int target_height,
+                                  bool use_keyframes) {
     init_ffmpeg();
 
     // Get video info first
@@ -624,19 +625,23 @@ void extract_frames_with_callback(const std::string& video_path,
         throw std::runtime_error("Invalid time range: start >= end");
     }
 
-    // Calculate frame timestamps
+    // Calculate frame timestamps if not using keyframes
     std::vector<int64_t> timestamps;
-    int64_t interval_ms = static_cast<int64_t>(interval_seconds * 1000.0);
-    
-    for (int64_t t = start_time_ms; t < end_time_ms; t += interval_ms) {
-        timestamps.push_back(t);
-        if (max_frames > 0 && timestamps.size() >= static_cast<size_t>(max_frames)) {
-            break;
+    if (!use_keyframes) {
+        int64_t interval_ms = static_cast<int64_t>(interval_seconds * 1000.0);
+        
+        for (int64_t t = start_time_ms; t < end_time_ms; t += interval_ms) {
+            timestamps.push_back(t);
+            if (max_frames > 0 && timestamps.size() >= static_cast<size_t>(max_frames)) {
+                break;
+            }
         }
-    }
 
-    std::cout << "Extracting " << timestamps.size() << " frames from " 
-              << video_path << " (interval: " << interval_seconds << "s)" << std::endl;
+        std::cout << "Extracting " << timestamps.size() << " frames from " 
+                  << video_path << " (interval: " << interval_seconds << "s)" << std::endl;
+    } else {
+        std::cout << "Extracting keyframes from " << video_path << std::endl;
+    }
 
     // Open format context
     auto fmt_deleter = [](AVFormatContext* ctx) {
@@ -696,9 +701,21 @@ void extract_frames_with_callback(const std::string& video_path,
 
     size_t current_target_idx = 0;
     int ret = 0;
+    int extracted_count = 0;
 
-    while (av_read_frame(fmt_ctx.get(), pkt) >= 0 && current_target_idx < timestamps.size()) {
+    while (av_read_frame(fmt_ctx.get(), pkt) >= 0) {
+        if (!use_keyframes && current_target_idx >= timestamps.size()) break;
+        if (max_frames > 0 && extracted_count >= max_frames) break;
+
         if (pkt->stream_index == video_stream_idx) {
+            // Optimization: If using keyframes, skip non-keyframe packets
+            // Note: Some codecs might need previous frames even for keyframes if they are not IDR, 
+            // but generally skipping non-key packets is safe for keyframe extraction.
+            if (use_keyframes && !(pkt->flags & AV_PKT_FLAG_KEY)) {
+                av_packet_unref(pkt);
+                continue;
+            }
+
             ret = avcodec_send_packet(codec_ctx.get(), pkt);
             if (ret < 0) {
                 av_packet_unref(pkt);
@@ -718,10 +735,25 @@ void extract_frames_with_callback(const std::string& video_path,
                     {1, 1000}
                 );
 
-                // Check if this frame matches our target timestamp
-                while (current_target_idx < timestamps.size() && 
-                       frame_ms >= timestamps[current_target_idx]) {
-                    
+                bool extract_this = false;
+
+                if (use_keyframes) {
+                    if (frame_ms >= start_time_ms && (end_time_ms == 0 || frame_ms < end_time_ms)) {
+                        // Double check if it's a keyframe (packet flag should be enough but frame has it too)
+                        if (frame->key_frame) {
+                            extract_this = true;
+                        }
+                    }
+                } else {
+                    // Check if this frame matches our target timestamp
+                    while (current_target_idx < timestamps.size() && 
+                           frame_ms >= timestamps[current_target_idx]) {
+                        extract_this = true;
+                        current_target_idx++;
+                    }
+                }
+
+                if (extract_this) {
                     // Convert to RGB24 and resize
                     int rgb_size = av_image_get_buffer_size(
                         AV_PIX_FMT_RGB24, 
@@ -750,15 +782,15 @@ void extract_frames_with_callback(const std::string& video_path,
                         callback(frame_data);
                     }
 
-                    std::cout << "Extracted frame " << (current_target_idx + 1) << "/" 
-                              << timestamps.size() << " at " << frame_ms << "ms" << std::endl;
-
-                    current_target_idx++;
-                    
-                    // If we've collected all frames, break
-                    if (current_target_idx >= timestamps.size()) {
-                        break;
+                    if (use_keyframes) {
+                        std::cout << "Extracted keyframe " << (extracted_count + 1) 
+                                  << " at " << frame_ms << "ms" << std::endl;
+                    } else {
+                        std::cout << "Extracted frame " << current_target_idx // already incremented
+                                  << "/" << timestamps.size() << " at " << frame_ms << "ms" << std::endl;
                     }
+                    
+                    extracted_count++;
                 }
 
                 av_frame_unref(frame);
@@ -779,7 +811,8 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
                                       int64_t start_time_ms,
                                       int64_t end_time_ms,
                                       int target_width,
-                                      int target_height) {
+                                      int target_height,
+                                      bool use_keyframes) {
     std::vector<FrameData> results;
     extract_frames_with_callback(
         video_path,
@@ -791,7 +824,8 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
         start_time_ms,
         end_time_ms,
         target_width,
-        target_height
+        target_height,
+        use_keyframes
     );
     return results;
 }

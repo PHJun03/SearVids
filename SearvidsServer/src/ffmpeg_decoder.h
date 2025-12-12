@@ -62,7 +62,8 @@ std::vector<FrameData> extract_frames(const std::string& video_path,    // Input
                                       int64_t start_time_ms = 0,        // Start time in milliseconds (default: 0)
                                       int64_t end_time_ms = 0,          // End time in milliseconds (0 = until end)
                                       int target_width = -1,            // Target width for resizing (-1 = original width)
-                                      int target_height = -1);          // Target height for resizing (-1 = original height)
+                                      int target_height = -1,           // Target height for resizing (-1 = original height)
+                                      bool use_keyframes = false);      // If true, extract only keyframes (ignores interval_seconds)
 
 // Extract video frames with callback (streaming)
 void extract_frames_with_callback(const std::string& video_path,
@@ -72,7 +73,8 @@ void extract_frames_with_callback(const std::string& video_path,
                                   int64_t start_time_ms = 0,
                                   int64_t end_time_ms = 0,
                                   int target_width = -1,
-                                  int target_height = -1);
+                                  int target_height = -1,
+                                  bool use_keyframes = false);
 
 // Extract a single frame at specific timestamp
 FrameData extract_frame_at(const std::string& video_path,   // Input video file path

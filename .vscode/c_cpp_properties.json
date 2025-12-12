@@ -12,7 +12,8 @@
                 "${workspaceFolder}/SearvidsServer/third_party/onnxruntime_include",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include",
                 "${env:VCPKG_ROOT}/installed/x64-windows/include/crow",
-                "${env:VCPKG_ROOT}/installed/x64-windows/include/nlohmann"
+                "${env:VCPKG_ROOT}/installed/x64-windows/include/nlohmann",
+                "${env:VCPKG_ROOT}/installed/x64-windows/include/opencv4"
             ],
             "defines": [
                 "_DEBUG",

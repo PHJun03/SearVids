@@ -13,7 +13,7 @@ services:
       - MODEL_PATH=/app/models
       - WHISPER_MODEL_SIZE=base
       # Force CPU usage for scripts if they check for CUDA
-      - CUDA_VISIBLE_DEVICES=""
+      - CUDA_VISIBLE_DEVICES=
     restart: always
 
   frontend:
