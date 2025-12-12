@@ -44,7 +44,10 @@ def main():
         print(f"Error loading model: {e}", file=sys.stderr)
         sys.exit(1)
 
-    segments, info = model.transcribe(audio_file, beam_size=5)
+    # Enable VAD filter (Silero VAD)
+    # min_silence_duration_ms: Minimum duration of silence to be considered as silence (default 2000ms might be too long for fast speech)
+    # We use default parameters for now, which are generally good.
+    segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
 
     for segment in segments:
         start_str = format_timestamp(segment.start)
