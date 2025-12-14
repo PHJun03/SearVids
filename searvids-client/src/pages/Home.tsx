@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
 import { Search, Video, ArrowRight, Loader2 } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Error from '../components/common/Error';
@@ -96,6 +96,7 @@ export default function Home() {
   const handleAnalyze = (e: React.FormEvent) => {
     e.preventDefault();
     if (url && keyword) {
+      queryClient.removeQueries({ queryKey: ['search-chapters'] });
       setVideoId(null);
       mutate({ url, query: keyword });
     }
@@ -145,6 +146,7 @@ export default function Home() {
     queryFn: () => videoApi.searchChapters(keyword, videoId || undefined),
     enabled: !!keyword && !!videoId && !!analyzeStatus && (analyzeStatus.status === 'done' || analyzeStatus.indexed_visual_frames > 0 || analyzeStatus.indexed_audio_segments > 0),
     staleTime: 0,
+    placeholderData: keepPreviousData,
   });
 
   const mergedResults = useMemo(() => {
