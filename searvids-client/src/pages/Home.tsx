@@ -13,7 +13,15 @@ export default function Home() {
   const [url, setUrl] = useState(() => sessionStorage.getItem('searvids_url') || '');
   const [keyword, setKeyword] = useState(() => sessionStorage.getItem('searvids_keyword') || '');
   const [videoId, setVideoId] = useState<string | null>(() => sessionStorage.getItem('searvids_videoId'));
+  const [dots, setDots] = useState('');
   const queryClient = useQueryClient();
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDots(prev => prev.length >= 3 ? '' : prev + '.');
+    }, 500);
+    return () => clearInterval(interval);
+  }, []);
 
   // Persist state to sessionStorage
   useEffect(() => {
@@ -106,6 +114,7 @@ export default function Home() {
     
     const isDone = analyzeStatus.status === 'done';
     const isError = analyzeStatus.status === 'error';
+    const isAnalyzing = analyzeStatus.status === 'analyzing';
 
     return (
       <div className="w-full max-w-2xl bg-slate-800/50 backdrop-blur rounded-xl p-6 border border-slate-700 space-y-4">
@@ -116,15 +125,8 @@ export default function Home() {
             isError ? 'bg-red-500/20 text-red-400' : 
             'bg-blue-500/20 text-blue-400'
           }`}>
-            {analyzeStatus.status.toUpperCase()}
+            {isAnalyzing ? `ANALYZING${dots}` : analyzeStatus.status.toUpperCase()}
           </span>
-        </div>
-        
-        <div className="w-full bg-slate-700 rounded-full h-2.5 overflow-hidden">
-          <div
-            className={`h-2.5 rounded-full transition-all duration-500 ${isError ? 'bg-red-500' : 'bg-blue-500'}`}
-            style={{ width: `${Math.min(100, analyzeStatus.progress_percent)}%` }}
-          />
         </div>
 
         {isDone && <p className="text-emerald-400 text-sm text-center">Analysis completed successfully!</p>}
