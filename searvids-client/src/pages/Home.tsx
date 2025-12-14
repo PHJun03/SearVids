@@ -194,46 +194,23 @@ export default function Home() {
       <div className="w-full max-w-2xl space-y-4">
         <h3 className="text-xl font-bold text-slate-200 mb-4">Search Results</h3>
         {mergedResults.map((group) => {
-          const audioItem = group.items.find(i => i.caption !== 'visual_frame');
           const visualItems = group.items.filter(i => i.caption === 'visual_frame');
-          const hasAudio = !!audioItem;
-          const hasVisual = visualItems.length > 0;
-          
-          let caption = 'Visual Match';
-          if (hasAudio) {
-            caption = hasVisual ? `Visual Match • ${audioItem!.caption}` : audioItem!.caption;
-          }
           
           const bestVisual = visualItems.sort((a, b) => b.similarity - a.similarity)[0];
           const thumbnailItem = bestVisual || group.items[0];
-          const maxScore = Math.max(...group.items.map(i => i.similarity));
 
           return (
-            <div key={`group-${group.start}`} className="flex gap-4 bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl transition-colors">
+            <div key={`group-${group.start}`} className="flex items-center gap-4 bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl transition-colors">
               <div className="relative group cursor-pointer">
                 <img
                   className="w-40 aspect-video object-cover rounded-lg bg-slate-900"
                   src={videoApi.getThumbnailUrl(videoId!, thumbnailItem.start_time)}
                   alt="thumbnail"
                 />
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors rounded-lg flex items-center justify-center">
-                    <div className="bg-black/70 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
-                        {formatTime(group.start)}
-                    </div>
-                </div>
               </div>
               
               <div className="flex-1 min-w-0">
-                <div className="flex justify-between items-start mb-2">
-                  <div className="flex gap-2">
-                    {hasAudio && <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full">Audio</span>}
-                    {hasVisual && <span className="text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full">Visual</span>}
-                  </div>
-                  <span className="text-xs font-mono text-slate-500">Score: {maxScore.toFixed(2)}</span>
-                </div>
-                
-                <p className="text-slate-200 font-medium line-clamp-2 mb-2">{caption}</p>
-                <p className="text-sm text-emerald-400 font-mono">
+                <p className="text-lg text-emerald-400 font-mono font-bold">
                   {formatTime(group.start)} - {formatTime(group.end)}
                 </p>
               </div>
