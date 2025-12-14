@@ -13,6 +13,7 @@ export default function Home() {
   const [url, setUrl] = useState(() => sessionStorage.getItem('searvids_url') || '');
   const [keyword, setKeyword] = useState(() => sessionStorage.getItem('searvids_keyword') || '');
   const [videoId, setVideoId] = useState<string | null>(() => sessionStorage.getItem('searvids_videoId'));
+  const [analyzedUrl, setAnalyzedUrl] = useState<string | null>(() => sessionStorage.getItem('searvids_analyzedUrl'));
   const [dots, setDots] = useState('');
   const queryClient = useQueryClient();
 
@@ -39,6 +40,14 @@ export default function Home() {
       sessionStorage.removeItem('searvids_videoId');
     }
   }, [videoId]);
+
+  useEffect(() => {
+    if (analyzedUrl) {
+      sessionStorage.setItem('searvids_analyzedUrl', analyzedUrl);
+    } else {
+      sessionStorage.removeItem('searvids_analyzedUrl');
+    }
+  }, [analyzedUrl]);
 
   // start analyze
   const {
@@ -98,6 +107,7 @@ export default function Home() {
     if (url && keyword) {
       queryClient.removeQueries({ queryKey: ['search-chapters'] });
       setVideoId(null);
+      setAnalyzedUrl(url);
       mutate({ url, query: keyword });
     }
   };
@@ -106,6 +116,15 @@ export default function Home() {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s.toString().padStart(2, '0')}`;
+  };
+
+  const getVideoLink = (videoUrl: string, startTime: number) => {
+    const time = Math.floor(startTime);
+    if (videoUrl.includes('youtube.com') || videoUrl.includes('youtu.be')) {
+      const separator = videoUrl.includes('?') ? '&' : '?';
+      return `${videoUrl}${separator}t=${time}`;
+    }
+    return `${videoUrl}#t=${time}`;
   };
 
   const renderStatus = () => {
@@ -202,7 +221,13 @@ export default function Home() {
           const thumbnailItem = bestVisual || group.items[0];
 
           return (
-            <div key={`group-${group.start}`} className="flex items-center gap-4 bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl transition-colors">
+            <a 
+              key={`group-${group.start}`} 
+              href={analyzedUrl ? getVideoLink(analyzedUrl, group.start) : '#'}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-4 bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl transition-colors block text-decoration-none"
+            >
               <div className="relative group cursor-pointer">
                 <img
                   className="w-40 aspect-video object-cover rounded-lg bg-slate-900"
@@ -216,7 +241,7 @@ export default function Home() {
                   {formatTime(group.start)} - {formatTime(group.end)}
                 </p>
               </div>
-            </div>
+            </a>
           );
         })}
       </div>
