@@ -13,6 +13,21 @@
 
 namespace hnsw_index {
 
+class VideoIdFilter : public hnswlib::BaseFilterFunctor {
+public:
+    VideoIdFilter(const std::vector<TimelineEntry>& entries, const std::string& video_id)
+        : entries_(entries), video_id_(video_id) {}
+
+    bool operator()(hnswlib::labeltype label) override {
+        if (label >= entries_.size()) return false;
+        return entries_[label].video_id == video_id_;
+    }
+
+private:
+    const std::vector<TimelineEntry>& entries_;
+    std::string video_id_;
+};
+
 class HnswIndexImpl {
 public:
     HnswIndexImpl(int dim, const std::string& space = "cosine")
@@ -26,36 +41,45 @@ public:
         index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(space_l2_.get(), 10000);
     }
 
-    int add(const std::vector<float>& embedding, float start, float end, const std::string& caption) {
+    int add(const std::vector<float>& embedding, const std::string& video_id, float start, float end, const std::string& caption) {
         std::lock_guard<std::mutex> lock(mutex_);
         int id = next_id_++;
         index_->addPoint(embedding.data(), id);
         // use TimelineEntry from header
-        entries_.push_back(TimelineEntry{ id, start, end, caption });
+        entries_.push_back(TimelineEntry{ id, video_id, start, end, caption });
         return id;
     }
 
-    std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5) {
+    std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5, const std::string& video_id_filter = "") {
         std::lock_guard<std::mutex> lock(mutex_);
         if (entries_.empty()) return {};
 
         size_t k = std::min(topk, entries_.size());
-        auto result = index_->searchKnn(query.data(), k);
+        
+        std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
+        if (!video_id_filter.empty()) {
+            VideoIdFilter filter(entries_, video_id_filter);
+            try {
+                result = index_->searchKnn(query.data(), k, &filter);
+            } catch (...) {
+                // Fallback if not enough elements match filter?
+                // hnswlib throws if k > number of elements in index? No.
+                // It might return fewer results.
+            }
+        } else {
+            result = index_->searchKnn(query.data(), k);
+        }
+
         std::vector<TimelineEntry> out;
         while (!result.empty()) {
             int id = result.top().second;
             float dist = result.top().first;
             result.pop();
             // find the entry by id
-            for (const auto& e : entries_) {
-                if (e.id == id) {
-                    TimelineEntry res = e;
-                    // hnswlib InnerProduct distance is 1.0 - dot_product (if normalized)
-                    // We want similarity (dot product), so 1.0 - dist
-                    res.similarity = 1.0f - dist;
-                    out.push_back(res);
-                    break;
-                }
+            if (id < entries_.size()) {
+                TimelineEntry res = entries_[id];
+                res.similarity = 1.0f - dist;
+                out.push_back(res);
             }
         }
         // Result is from worst to best (priority queue max heap), so reverse it
@@ -81,14 +105,14 @@ void create(int dim, const std::string& space) {
     g_index = std::make_unique<HnswIndexImpl>(dim, space);
 }
 
-int add(const std::vector<float>& embedding, float start, float end, const std::string& caption) {
+int add(const std::vector<float>& embedding, const std::string& video_id, float start, float end, const std::string& caption) {
     if (!g_index) throw std::runtime_error("Index not created");
-    return g_index->add(embedding, start, end, caption);
+    return g_index->add(embedding, video_id, start, end, caption);
 }
 
-std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk) {
+std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk, const std::string& video_id_filter) {
     if (!g_index) throw std::runtime_error("Index not created");
-    return g_index->search(query, topk);
+    return g_index->search(query, topk, video_id_filter);
 }
 
 size_t size() {

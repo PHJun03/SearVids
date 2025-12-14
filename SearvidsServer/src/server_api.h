@@ -29,6 +29,7 @@ struct VideoSession {
 
     std::atomic<bool> analyzing{false};
     std::atomic<bool> done{false};
+    std::atomic<bool> cancelled{false};
     std::atomic<int> progress_percent{0};
 
     std::string current_stage;
@@ -51,6 +52,7 @@ struct SearchRequest {
     int offset = 0;
     float min_similarity = 0.0f;
     std::string search_type = "both";
+    std::string video_id;
 };
 
 // Search result structure

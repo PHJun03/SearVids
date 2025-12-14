@@ -70,8 +70,8 @@ export const videoApi = {
     return response.data;
   },
 
-  searchChapters: async (query: string, topk = 10): Promise<SearchResponse> => {
-    const res = await api.post<SearchResponse>('/search', { query, topk });
+  searchChapters: async (query: string, videoId?: string, topk = 10): Promise<SearchResponse> => {
+    const res = await api.post<SearchResponse>('/search', { query, video_id: videoId, topk });
     return res.data;
   },
 };

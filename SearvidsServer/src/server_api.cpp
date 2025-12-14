@@ -97,6 +97,7 @@ std::string make_video_id(const std::string& url) {
 
 void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
     auto& sess = *sess_ptr;
+    if (sess.cancelled) return;
     sess.analyzing = true;
     sess.started_at = std::chrono::system_clock::now();
     sess.current_stage = "initializing";
@@ -123,6 +124,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
             std::future<void> last_analysis_future;
             
             while (current_start < total_duration_sec) {
+                if (sess.cancelled) throw std::runtime_error("Analysis cancelled");
                 int current_end = std::min((int)total_duration_sec, current_start + CHUNK_SIZE);
                 
                 // Update stage
@@ -183,6 +185,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
 
                                 auto consumer_thread = std::thread([&sess, &clip, &frame_queue, current_start, total_duration_sec]() {
                                     while (true) {
+                                        if (sess.cancelled) break;
                                         auto item = frame_queue.pop();
                                         if (item.is_end) break;
                                         try {
@@ -192,6 +195,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                             auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
                                             hnsw_index::add(
                                                 emb,
+                                                sess.video_id,
                                                 static_cast<float>(real_timestamp_ms) / 1000.0f,
                                                 static_cast<float>(real_timestamp_ms) / 1000.0f + 1.0f,
                                                 "visual_frame"
@@ -236,6 +240,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                 
                                 g_whisper.transcribe_with_callback(audio_path, 
                                     [&sess, &clip, &re, &buffer, current_start, total_duration_sec](const std::string& chunk) {
+                                        if (sess.cancelled) return;
                                         buffer += chunk;
                                         size_t pos;
                                         while ((pos = buffer.find('\n')) != std::string::npos) {
@@ -258,7 +263,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                                     
                                                     if (!text.empty()) {
                                                         auto emb = clip.encodeText(text);
-                                                        hnsw_index::add(emb, start, end, text);
+                                                        hnsw_index::add(emb, sess.video_id, start, end, text);
                                                         sess.indexed_audio_segments++;
                                                         
                                                         double progress = (double)(end * 1000.0) / (double)(total_duration_sec * 1000);
@@ -369,6 +374,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                     // Consumer Thread: CLIP Inference & Indexing
                     auto consumer_thread = std::thread([&sess, &clip, &frame_queue]() {
                         while (true) {
+                            if (sess.cancelled) break;
                             auto item = frame_queue.pop();
                             if (item.is_end) break;
                             
@@ -377,6 +383,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                 auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
                                 hnsw_index::add(
                                     emb,
+                                    sess.video_id,
                                     static_cast<float>(frame.timestamp_ms) / 1000.0f,
                                     static_cast<float>(frame.timestamp_ms) / 1000.0f + 1.0f,
                                     "visual_frame"
@@ -445,6 +452,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                     
                     g_whisper.transcribe_with_callback(audio_path, 
                         [&sess, &clip, &re, &buffer](const std::string& chunk) {
+                            if (sess.cancelled) return;
                             buffer += chunk;
                             size_t pos;
                             while ((pos = buffer.find('\n')) != std::string::npos) {
@@ -470,7 +478,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                         
                                         if (!text.empty()) {
                                             auto emb = clip.encodeText(text);
-                                            hnsw_index::add(emb, start, end, text);
+                                            hnsw_index::add(emb, sess.video_id, start, end, text);
                                             sess.indexed_audio_segments++;
                                             
                                             // Update progress (Audio is approx 45% of total, from 45% to 90%)
@@ -547,6 +555,7 @@ SearchRequest parse_search_request(const std::string& body) {
         if (j.contains("offset")) req.offset = j["offset"];
         if (j.contains("min_similarity")) req.min_similarity = j["min_similarity"];
         if (j.contains("search_type")) req.search_type = j["search_type"];
+        if (j.contains("video_id")) req.video_id = j["video_id"];
     } catch (...) {}
     return req;
 }
@@ -665,6 +674,14 @@ void setup_routes(crow::SimpleApp& app) {
         auto vid = make_video_id(url);
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            
+            // Cancel other sessions
+            for (auto& kv : g_sessions) {
+                if (kv.first != vid && kv.second->analyzing) {
+                    kv.second->cancelled = true;
+                }
+            }
+
             // Use shared_ptr
             auto it = g_sessions.find(vid);
             if (it == g_sessions.end()) {
@@ -681,6 +698,7 @@ void setup_routes(crow::SimpleApp& app) {
                 // For now, just return existing
                 auto sess = it->second;
                 if (!sess->analyzing && !sess->done) {
+                     sess->cancelled = false;
                      std::thread([sess]() {
                         analyze_video_async(sess);
                     }).detach();
@@ -704,6 +722,14 @@ void setup_routes(crow::SimpleApp& app) {
         auto vid = make_video_id(url);
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
+
+            // Cancel other sessions
+            for (auto& kv : g_sessions) {
+                if (kv.first != vid && kv.second->analyzing) {
+                    kv.second->cancelled = true;
+                }
+            }
+
             auto it = g_sessions.find(vid);
             if (it == g_sessions.end()) {
                 auto sess = std::make_shared<VideoSession>();
@@ -714,6 +740,7 @@ void setup_routes(crow::SimpleApp& app) {
             } else {
                 auto sess = it->second;
                 if (!sess->analyzing && !sess->done) {
+                     sess->cancelled = false;
                      std::thread([sess]() { analyze_video_async(sess); }).detach();
                 }
             }
@@ -735,6 +762,14 @@ void setup_routes(crow::SimpleApp& app) {
         auto vid = make_video_id(url);
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
+
+            // Cancel other sessions
+            for (auto& kv : g_sessions) {
+                if (kv.first != vid && kv.second->analyzing) {
+                    kv.second->cancelled = true;
+                }
+            }
+
             auto it = g_sessions.find(vid);
             if (it == g_sessions.end()) {
                 auto sess = std::make_shared<VideoSession>();
@@ -745,6 +780,7 @@ void setup_routes(crow::SimpleApp& app) {
             } else {
                 auto sess = it->second;
                 if (!sess->analyzing && !sess->done) {
+                     sess->cancelled = false;
                      std::thread([sess]() { analyze_video_async(sess); }).detach();
                 }
             }
@@ -934,7 +970,7 @@ void setup_routes(crow::SimpleApp& app) {
         }
 
         // 2) HNSW search
-        auto hnsw_results = hnsw_index::search(emb, sreq.topk);
+        auto hnsw_results = hnsw_index::search(emb, sreq.topk, sreq.video_id);
 
         // 3) filter and convert
         auto api_results = filter_results(hnsw_results, sreq.query);
@@ -962,7 +998,7 @@ void setup_routes(crow::SimpleApp& app) {
                 emb = sreq.embedding;
             }
 
-            auto hnsw_results = hnsw_index::search(emb, sreq.topk);
+            auto hnsw_results = hnsw_index::search(emb, sreq.topk, sreq.video_id);
             auto api_results = filter_results(hnsw_results, sreq.query);
             return create_search_response(api_results);
         } catch (const std::exception& e) {

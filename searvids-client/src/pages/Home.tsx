@@ -4,7 +4,7 @@
  */
 
 import { useState, useEffect, useMemo } from 'react';
-import { useMutation, useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, Video, ArrowRight, Loader2 } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Error from '../components/common/Error';
@@ -154,11 +154,10 @@ export default function Home() {
     isFetching: isSearching,
     error: searchError,
   } = useQuery<SearchResponse>({
-    queryKey: ['search-chapters', keyword, analyzeStatus?.indexed_visual_frames, analyzeStatus?.indexed_audio_segments],
-    queryFn: () => videoApi.searchChapters(keyword),
-    enabled: !!keyword && !!analyzeStatus && (analyzeStatus.status === 'done' || analyzeStatus.indexed_visual_frames > 0 || analyzeStatus.indexed_audio_segments > 0),
+    queryKey: ['search-chapters', keyword, videoId, analyzeStatus?.indexed_visual_frames, analyzeStatus?.indexed_audio_segments],
+    queryFn: () => videoApi.searchChapters(keyword, videoId || undefined),
+    enabled: !!keyword && !!videoId && !!analyzeStatus && (analyzeStatus.status === 'done' || analyzeStatus.indexed_visual_frames > 0 || analyzeStatus.indexed_audio_segments > 0),
     staleTime: 0,
-    placeholderData: keepPreviousData,
   });
 
   const mergedResults = useMemo(() => {
