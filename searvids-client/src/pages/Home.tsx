@@ -120,10 +120,6 @@ export default function Home() {
           </span>
         </div>
         
-        {analyzeStatus.current_stage && (
-          <p className="text-sm text-slate-400">Current Stage: <span className="text-slate-200">{analyzeStatus.current_stage}</span></p>
-        )}
-
         <div className="w-full bg-slate-700 rounded-full h-2.5 overflow-hidden">
           <div
             className={`h-2.5 rounded-full transition-all duration-500 ${isError ? 'bg-red-500' : 'bg-blue-500'}`}
@@ -133,17 +129,6 @@ export default function Home() {
 
         {isDone && <p className="text-emerald-400 text-sm text-center">Analysis completed successfully!</p>}
         {isError && <p className="text-red-400 text-sm text-center">Error: {analyzeStatus.error}</p>}
-        
-        <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-700/50">
-          <div className="text-center">
-            <p className="text-xs text-slate-500 uppercase">Visual Frames</p>
-            <p className="text-lg font-mono text-slate-300">{analyzeStatus.indexed_visual_frames}</p>
-          </div>
-          <div className="text-center">
-            <p className="text-xs text-slate-500 uppercase">Audio Segments</p>
-            <p className="text-lg font-mono text-slate-300">{analyzeStatus.indexed_audio_segments}</p>
-          </div>
-        </div>
       </div>
     );
   };
