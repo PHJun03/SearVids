@@ -42,7 +42,7 @@ export default function VideoDetail() {
   return (
     <div className="max-w-6xl mx-auto px-4 py-8">
       {/* Video Player */}
-      <div className="bg-black rounded-lg overflow-hidden mb-8">
+      <div className="bg-black rounded-xl overflow-hidden mb-8 shadow-2xl border border-slate-800">
         <ReactPlayer
           url={videoApi.getVideoStreamUrl(video.id)}
           controls
@@ -54,36 +54,36 @@ export default function VideoDetail() {
       {/* Video Info */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
         <div className="lg:col-span-2">
-          <h1 className="text-3xl font-bold mb-4">{video.title}</h1>
+          <h1 className="text-3xl font-bold mb-4 text-slate-100">{video.title}</h1>
 
-          <div className="bg-gray-50 rounded-lg p-6 mb-6">
-            <h2 className="text-lg font-semibold mb-4">Details</h2>
+          <div className="bg-slate-800 rounded-xl p-6 mb-6 border border-slate-700">
+            <h2 className="text-lg font-semibold mb-4 text-slate-200">Details</h2>
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <p className="text-gray-600 text-sm">Resolution</p>
-                <p className="font-semibold">
+                <p className="text-slate-400 text-sm">Resolution</p>
+                <p className="font-semibold text-slate-200">
                   {video.width}x{video.height}
                 </p>
               </div>
               <div>
-                <p className="text-gray-600 text-sm">FPS</p>
-                <p className="font-semibold">{video.fps}</p>
+                <p className="text-slate-400 text-sm">FPS</p>
+                <p className="font-semibold text-slate-200">{video.fps}</p>
               </div>
               <div>
-                <p className="text-gray-600 text-sm">Duration</p>
-                <p className="font-semibold">{formatDuration(video.duration)}</p>
+                <p className="text-slate-400 text-sm">Duration</p>
+                <p className="font-semibold text-slate-200">{formatDuration(video.duration)}</p>
               </div>
               <div>
-                <p className="text-gray-600 text-sm">File Size</p>
-                <p className="font-semibold">{formatFileSize(video.fileSize)}</p>
+                <p className="text-slate-400 text-sm">File Size</p>
+                <p className="font-semibold text-slate-200">{formatFileSize(video.fileSize)}</p>
               </div>
               <div>
-                <p className="text-gray-600 text-sm">Codec</p>
-                <p className="font-semibold">{video.codec}</p>
+                <p className="text-slate-400 text-sm">Codec</p>
+                <p className="font-semibold text-slate-200">{video.codec}</p>
               </div>
               <div>
-                <p className="text-gray-600 text-sm">Bitrate</p>
-                <p className="font-semibold">{video.bitrate} kbps</p>
+                <p className="text-slate-400 text-sm">Bitrate</p>
+                <p className="font-semibold text-slate-200">{video.bitrate} kbps</p>
               </div>
             </div>
           </div>
@@ -91,12 +91,12 @@ export default function VideoDetail() {
           {/* Tags */}
           {video.tags.length > 0 && (
             <div className="mb-6">
-              <h2 className="text-lg font-semibold mb-3">Tags</h2>
+              <h2 className="text-lg font-semibold mb-3 text-slate-200">Tags</h2>
               <div className="flex flex-wrap gap-2">
                 {video.tags.map((tag) => (
                   <span
                     key={tag.id}
-                    className="bg-blue-100 text-blue-800 px-3 py-1 rounded-full"
+                    className="bg-blue-500/20 text-blue-300 px-3 py-1 rounded-full border border-blue-500/30"
                   >
                     {tag.name}
                   </span>
@@ -108,20 +108,20 @@ export default function VideoDetail() {
 
         {/* Sidebar */}
         <div className="lg:col-span-1">
-          <div className="bg-gray-50 rounded-lg p-6">
-            <h2 className="text-lg font-semibold mb-4">File Information</h2>
+          <div className="bg-slate-800 rounded-xl p-6 border border-slate-700">
+            <h2 className="text-lg font-semibold mb-4 text-slate-200">File Information</h2>
             <div className="space-y-3 text-sm">
               <div>
-                <p className="text-gray-600">File Path</p>
-                <p className="font-mono text-xs break-all">{video.filePath}</p>
+                <p className="text-slate-400">File Path</p>
+                <p className="font-mono text-xs break-all text-slate-300">{video.filePath}</p>
               </div>
               <div>
-                <p className="text-gray-600">Added</p>
-                <p>{formatDistanceToNow(new Date(video.addedAt), { addSuffix: true })}</p>
+                <p className="text-slate-400">Added</p>
+                <p className="text-slate-300">{formatDistanceToNow(new Date(video.addedAt), { addSuffix: true })}</p>
               </div>
               <div>
-                <p className="text-gray-600">Created</p>
-                <p>{new Date(video.createdAt).toLocaleDateString()}</p>
+                <p className="text-slate-400">Created</p>
+                <p className="text-slate-300">{new Date(video.createdAt).toLocaleDateString()}</p>
               </div>
             </div>
           </div>

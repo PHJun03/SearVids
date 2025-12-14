@@ -21,7 +21,7 @@ export default function Pagination({
       <button
         onClick={() => onPageChange(currentPage - 1)}
         disabled={currentPage === 1}
-        className="p-2 hover:bg-gray-200 disabled:opacity-50 rounded"
+        className="p-2 hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-transparent rounded transition-colors text-slate-300"
       >
         <ChevronLeft size={20} />
       </button>
@@ -31,10 +31,10 @@ export default function Pagination({
           <button
             key={page}
             onClick={() => onPageChange(page)}
-            className={`px-3 py-1 rounded ${
+            className={`px-3 py-1 rounded transition-colors ${
               currentPage === page
                 ? 'bg-blue-600 text-white'
-                : 'hover:bg-gray-200'
+                : 'text-slate-300 hover:bg-slate-700'
             }`}
           >
             {page}
@@ -45,7 +45,7 @@ export default function Pagination({
       <button
         onClick={() => onPageChange(currentPage + 1)}
         disabled={currentPage === totalPages}
-        className="p-2 hover:bg-gray-200 disabled:opacity-50 rounded"
+        className="p-2 hover:bg-slate-700 disabled:opacity-50 disabled:hover:bg-transparent rounded transition-colors text-slate-300"
       >
         <ChevronRight size={20} />
       </button>

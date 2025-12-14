@@ -15,14 +15,14 @@ export default function VideoList({ videos, totalCount }: VideoListProps) {
   if (videos.length === 0) {
     return (
       <div className="text-center py-12">
-        <p className="text-gray-500 text-lg">No videos found</p>
+        <p className="text-slate-500 text-lg">No videos found</p>
       </div>
     );
   }
 
   return (
     <div>
-      <p className="text-gray-600 mb-4">Found {totalCount} video(s)</p>
+      <p className="text-slate-400 mb-4">Found <span className="text-slate-200 font-semibold">{totalCount}</span> video(s)</p>
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
         {videos.map((video) => (
           <VideoCard key={video.id} video={video} />

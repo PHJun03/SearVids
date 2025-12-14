@@ -5,15 +5,32 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useMutation, useQuery, keepPreviousData, useQueryClient } from '@tanstack/react-query';
-import { Search, Video, ArrowRight } from 'lucide-react';
+import { Search, Video, ArrowRight, Loader2 } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Error from '../components/common/Error';
 
 export default function Home() {
-  const [url, setUrl] = useState('');
-  const [keyword, setKeyword] = useState('');
-  const [videoId, setVideoId] = useState<string | null>(null);
+  const [url, setUrl] = useState(() => sessionStorage.getItem('searvids_url') || '');
+  const [keyword, setKeyword] = useState(() => sessionStorage.getItem('searvids_keyword') || '');
+  const [videoId, setVideoId] = useState<string | null>(() => sessionStorage.getItem('searvids_videoId'));
   const queryClient = useQueryClient();
+
+  // Persist state to sessionStorage
+  useEffect(() => {
+    sessionStorage.setItem('searvids_url', url);
+  }, [url]);
+
+  useEffect(() => {
+    sessionStorage.setItem('searvids_keyword', keyword);
+  }, [keyword]);
+
+  useEffect(() => {
+    if (videoId) {
+      sessionStorage.setItem('searvids_videoId', videoId);
+    } else {
+      sessionStorage.removeItem('searvids_videoId');
+    }
+  }, [videoId]);
 
   // start analyze
   const {
@@ -34,7 +51,6 @@ export default function Home() {
     const ws = new WebSocket(wsUrl);
 
     ws.onopen = () => {
-      // Send subscribe message
       ws.send(JSON.stringify({ type: 'subscribe', video_id: videoId }));
     };
 
@@ -42,7 +58,6 @@ export default function Home() {
       try {
         const data = JSON.parse(event.data);
         if (data.type === 'status') {
-          // Update query cache directly
           queryClient.setQueryData(['analyze-status', videoId], data);
         }
       } catch (e) {
@@ -55,7 +70,7 @@ export default function Home() {
     };
   }, [videoId, queryClient]);
 
-  // poll status (fallback if WS fails or initial load)
+  // poll status (fallback)
   const {
     data: analyzeStatus,
     error: statusError,
@@ -65,7 +80,6 @@ export default function Home() {
     enabled: !!videoId,
     refetchInterval: (query) => {
       const data = query.state.data;
-      // If WS is working, we might not need polling, but keep it as backup with longer interval
       if (!data) return 1000;
       return data.status === 'done' || data.status === 'error' ? false : 2000;
     },
@@ -88,30 +102,47 @@ export default function Home() {
   const renderStatus = () => {
     if (!videoId) return null;
     if (statusError) return <Error message="Failed to fetch status." />;
-    if (!analyzeStatus) return <p className="text-blue-200">Waiting for status...</p>;
+    if (!analyzeStatus) return <div className="flex items-center justify-center gap-2 text-blue-400"><Loader2 className="animate-spin" /> Waiting for status...</div>;
+    
+    const isDone = analyzeStatus.status === 'done';
+    const isError = analyzeStatus.status === 'error';
+
     return (
-      <div className="text-center py-4 space-y-2">
-        <p className="text-lg font-semibold">
-          Status: <span className="text-emerald-300">{analyzeStatus.status}</span>
-        </p>
+      <div className="w-full max-w-2xl bg-slate-800/50 backdrop-blur rounded-xl p-6 border border-slate-700 space-y-4">
+        <div className="flex justify-between items-center">
+          <h3 className="text-lg font-semibold text-slate-200">Analysis Status</h3>
+          <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+            isDone ? 'bg-emerald-500/20 text-emerald-400' : 
+            isError ? 'bg-red-500/20 text-red-400' : 
+            'bg-blue-500/20 text-blue-400'
+          }`}>
+            {analyzeStatus.status.toUpperCase()}
+          </span>
+        </div>
+        
         {analyzeStatus.current_stage && (
-          <p className="text-sm text-gray-300">Stage: {analyzeStatus.current_stage}</p>
+          <p className="text-sm text-slate-400">Current Stage: <span className="text-slate-200">{analyzeStatus.current_stage}</span></p>
         )}
-        <div className="w-full bg-gray-700 rounded-full h-2 overflow-hidden max-w-md mx-auto">
+
+        <div className="w-full bg-slate-700 rounded-full h-2.5 overflow-hidden">
           <div
-            className="bg-blue-500 h-2 transition-all"
+            className={`h-2.5 rounded-full transition-all duration-500 ${isError ? 'bg-red-500' : 'bg-blue-500'}`}
             style={{ width: `${Math.min(100, analyzeStatus.progress_percent)}%` }}
           />
         </div>
-        {analyzeStatus.status === 'done' && (
-          <p className="text-emerald-300 text-sm">Analysis completed.</p>
-        )}
-        {analyzeStatus.status === 'error' && (
-          <p className="text-red-300 text-sm">Error: {analyzeStatus.error}</p>
-        )}
-        <div className="flex justify-center gap-4 text-xs text-gray-400">
-            <span>Visual Frames: {analyzeStatus.indexed_visual_frames}</span>
-            <span>Audio Segments: {analyzeStatus.indexed_audio_segments}</span>
+
+        {isDone && <p className="text-emerald-400 text-sm text-center">Analysis completed successfully!</p>}
+        {isError && <p className="text-red-400 text-sm text-center">Error: {analyzeStatus.error}</p>}
+        
+        <div className="grid grid-cols-2 gap-4 pt-2 border-t border-slate-700/50">
+          <div className="text-center">
+            <p className="text-xs text-slate-500 uppercase">Visual Frames</p>
+            <p className="text-lg font-mono text-slate-300">{analyzeStatus.indexed_visual_frames}</p>
+          </div>
+          <div className="text-center">
+            <p className="text-xs text-slate-500 uppercase">Audio Segments</p>
+            <p className="text-lg font-mono text-slate-300">{analyzeStatus.indexed_audio_segments}</p>
+          </div>
         </div>
       </div>
     );
@@ -134,11 +165,9 @@ export default function Home() {
     const results = searchData?.results ?? [];
     if (!results.length) return [];
 
-    // Sort by start time
     const sortedResults = [...results].sort((a, b) => a.start_time - b.start_time);
-
-    // Merge overlapping results
     const merged: { start: number; end: number; items: typeof results }[] = [];
+    
     if (sortedResults.length > 0) {
       let currentGroup = {
         start: sortedResults[0].start_time,
@@ -148,7 +177,6 @@ export default function Home() {
       
       for (let i = 1; i < sortedResults.length; i++) {
         const item = sortedResults[i];
-        // Check overlap or contiguous (within 3.0s tolerance)
         if (item.start_time <= currentGroup.end + 3.0) {
           currentGroup.end = Math.max(currentGroup.end, item.end_time);
           currentGroup.items.push(item);
@@ -167,62 +195,61 @@ export default function Home() {
   }, [searchData]);
 
   const renderChapters = () => {
-    if (isSearching && !searchData) return <p className="text-blue-200">Searching chapters...</p>;
+    if (isSearching && !searchData) return <div className="flex items-center gap-2 text-blue-400"><Loader2 className="animate-spin" /> Searching chapters...</div>;
     if (searchError) return <Error message="Failed to load chapters." />;
     
     if (!mergedResults.length) {
-      if (isSearching) return <p className="text-blue-200">Searching chapters...</p>;
-      // Only show "No results" if we are not searching and have no results, 
-      // but also check if we have started analysis.
+      if (isSearching) return null;
       if (analyzeStatus?.status === 'pending' || !analyzeStatus) return null;
-      
-      return (
-        <div className="text-center space-y-2">
-          <p className="text-gray-400">No results found yet.</p>
-        </div>
-      );
+      return <p className="text-slate-500">No results found yet.</p>;
     }
 
     return (
       <div className="w-full max-w-2xl space-y-4">
+        <h3 className="text-xl font-bold text-slate-200 mb-4">Search Results</h3>
         {mergedResults.map((group) => {
-          // Determine display properties
           const audioItem = group.items.find(i => i.caption !== 'visual_frame');
           const visualItems = group.items.filter(i => i.caption === 'visual_frame');
           const hasAudio = !!audioItem;
           const hasVisual = visualItems.length > 0;
           
-          // Construct caption: show both if available
           let caption = 'Visual Match';
           if (hasAudio) {
             caption = hasVisual ? `Visual Match • ${audioItem!.caption}` : audioItem!.caption;
           }
           
-          // Find best visual item for thumbnail, or fallback to first item
           const bestVisual = visualItems.sort((a, b) => b.similarity - a.similarity)[0];
           const thumbnailItem = bestVisual || group.items[0];
-          
           const maxScore = Math.max(...group.items.map(i => i.similarity));
 
           return (
-            <div key={`group-${group.start}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
-              <img
-                className="w-20 aspect-video object-cover rounded"
-                src={videoApi.getThumbnailUrl(videoId!, thumbnailItem.start_time)}
-                alt="thumbnail"
-              />
-              <div className="flex-1">
-                <div className="flex justify-between items-start">
-                  <p className="text-sm text-emerald-200">
-                    {formatTime(group.start)} - {formatTime(group.end)}
-                  </p>
-                  <div className="flex gap-1">
-                    {hasAudio && <span className="text-[10px] bg-blue-900 text-blue-200 px-1.5 py-0.5 rounded">Audio</span>}
-                    {hasVisual && <span className="text-[10px] bg-purple-900 text-purple-200 px-1.5 py-0.5 rounded">Visual</span>}
-                  </div>
+            <div key={`group-${group.start}`} className="flex gap-4 bg-slate-800 hover:bg-slate-750 border border-slate-700 p-4 rounded-xl transition-colors">
+              <div className="relative group cursor-pointer">
+                <img
+                  className="w-40 aspect-video object-cover rounded-lg bg-slate-900"
+                  src={videoApi.getThumbnailUrl(videoId!, thumbnailItem.start_time)}
+                  alt="thumbnail"
+                />
+                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/20 transition-colors rounded-lg flex items-center justify-center">
+                    <div className="bg-black/70 text-white text-xs px-2 py-1 rounded opacity-0 group-hover:opacity-100 transition-opacity">
+                        {formatTime(group.start)}
+                    </div>
                 </div>
-                <p className="text-base font-semibold text-white line-clamp-2">{caption}</p>
-                <p className="text-xs text-gray-400">score: {maxScore.toFixed(3)}</p>
+              </div>
+              
+              <div className="flex-1 min-w-0">
+                <div className="flex justify-between items-start mb-2">
+                  <div className="flex gap-2">
+                    {hasAudio && <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-500/20 text-blue-300 px-2 py-0.5 rounded-full">Audio</span>}
+                    {hasVisual && <span className="text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-300 px-2 py-0.5 rounded-full">Visual</span>}
+                  </div>
+                  <span className="text-xs font-mono text-slate-500">Score: {maxScore.toFixed(2)}</span>
+                </div>
+                
+                <p className="text-slate-200 font-medium line-clamp-2 mb-2">{caption}</p>
+                <p className="text-sm text-emerald-400 font-mono">
+                  {formatTime(group.start)} - {formatTime(group.end)}
+                </p>
               </div>
             </div>
           );
@@ -232,72 +259,81 @@ export default function Home() {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-gray-900 text-white flex items-center justify-center">
-      <div className="max-w-4xl w-full mx-auto px-4 py-20 flex flex-col items-center">
+    <div className="flex flex-col items-center justify-center py-20 px-4">
+      {/* Hero Section */}
+      <div className="text-center mb-12 max-w-2xl">
+        <h1 className="text-5xl md:text-6xl font-extrabold mb-6 tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
+          Searvids
+        </h1>
+        <p className="text-xl text-slate-400 font-light">
+          Analyze videos and search for specific moments using AI.
+        </p>
+      </div>
 
-        {/* Header Section */}
-        <div className="flex flex-col items-center text-center mb-16 mx-auto">
-          <h1 className="text-6xl font-extrabold mb-6 tracking-tight text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-emerald-400">
-            Searvids
-          </h1>
-          <p className="text-xl text-gray-300 font-light">
-            Search in a video, generate video chapters about the keyword.
-          </p>
-        </div>
-
-        {/* Input Section */}
-        <div className="bg-white/10 backdrop-blur-lg p-8 rounded-2xl shadow-2xl border border-white/10 mb-12 w-full max-w-2xl mx-auto flex flex-col items-center">
-          <form onSubmit={handleAnalyze} className="w-full space-y-4 text-center">
-            {/* Video URL Input */}
+      {/* Input Section */}
+      <div className="w-full max-w-2xl bg-slate-800/50 backdrop-blur-sm p-8 rounded-2xl border border-slate-700 shadow-xl mb-12">
+        <form onSubmit={handleAnalyze} className="space-y-6">
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-300 ml-1">Video URL</label>
             <div className="relative">
               <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                <Video className="text-red-500" size={24} />
+                <Video className="text-slate-500" size={20} />
               </div>
               <input
                 type="text"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder="Paste Video URL here..."
-                className="w-full pl-12 pr-12 py-4 bg-gray-800/50 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400 transition-all text-center"
+                placeholder="https://example.com/video.mp4"
+                className="w-full pl-12 pr-4 py-3 bg-slate-900/50 border border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-slate-500 transition-all"
               />
             </div>
+          </div>
 
-            {/* Keyword Input & Button */}
-            <div className="flex gap-4 flex-col md:flex-row md:items-center md:justify-center">
-              <div className="relative flex-1 md:max-w-md w-full">
-                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                  <Search className="text-blue-400" size={20} />
-                </div>
-                <input
-                  type="text"
-                  value={keyword}
-                  onChange={(e) => setKeyword(e.target.value)}
-                  placeholder="Search Keyword..."
-                  className="w-full pl-12 pr-12 py-4 bg-gray-800/50 border border-gray-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-gray-400 transition-all text-center"
-                />
+          <div className="space-y-2">
+            <label className="text-sm font-medium text-slate-300 ml-1">Search Query</label>
+            <div className="relative">
+              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                <Search className="text-slate-500" size={20} />
               </div>
-              <button
-                type="submit"
-                disabled={isPending || !url || !keyword}
-                className="bg-blue-600 hover:bg-blue-500 disabled:bg-gray-600 disabled:cursor-not-allowed text-white px-8 py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-blue-500/30 w-full md:w-auto"
-              >
-                {isPending ? 'Analyzing...' : 'Generate Chapters'}
-                {!isPending && <ArrowRight size={20} />}
-              </button>
+              <input
+                type="text"
+                value={keyword}
+                onChange={(e) => setKeyword(e.target.value)}
+                placeholder="e.g., 'cat jumping' or 'hello world'"
+                className="w-full pl-12 pr-4 py-3 bg-slate-900/50 border border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-slate-500 transition-all"
+              />
             </div>
-          </form>
-        </div>
+          </div>
 
-       {/* Results / Status Section */}
-        <div className="space-y-6 w-full max-w-2xl mx-auto flex flex-col items-center">
-          {analyzeError && (
-            <div className="text-center w-full">
-              <Error message="Failed to start analysis. Please check the URL and try again." />
-            </div>
-          )}
-          {renderStatus()}
-          {renderChapters()}
-        </div>
+          <button
+            type="submit"
+            disabled={isPending || !url || !keyword}
+            className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-blue-500/20"
+          >
+            {isPending ? (
+              <>
+                <Loader2 className="animate-spin" size={20} />
+                Starting Analysis...
+              </>
+            ) : (
+              <>
+                Generate Chapters
+                <ArrowRight size={20} />
+              </>
+            )}
+          </button>
+        </form>
+      </div>
+
+      {/* Results Section */}
+      <div className="w-full flex flex-col items-center space-y-8">
+        {analyzeError && (
+          <div className="w-full max-w-2xl">
+            <Error message="Failed to start analysis. Please check the URL and try again." />
+          </div>
+        )}
+        {renderStatus()}
+        {renderChapters()}
       </div>
     </div>
   );
