@@ -373,6 +373,9 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
 
                     // Consumer Thread: CLIP Inference & Indexing
                     auto consumer_thread = std::thread([&sess, &clip, &frame_queue]() {
+                        std::vector<uint8_t> last_rgb;
+                        std::vector<float> last_emb;
+
                         while (true) {
                             if (sess.cancelled) break;
                             auto item = frame_queue.pop();
@@ -380,7 +383,39 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                             
                             try {
                                 auto& frame = item.frame;
-                                auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
+                                std::vector<float> emb;
+
+                                // Optimization: Scene Change Detection
+                                // If the current frame is very similar to the previous one, reuse the embedding.
+                                // This skips the heavy CLIP inference step.
+                                bool is_similar = false;
+                                if (!last_rgb.empty() && !last_emb.empty() && last_rgb.size() == frame.rgb_data.size()) {
+                                    long long diff_sum = 0;
+                                    size_t step = 13; // Check every 13th pixel for speed (prime number to avoid patterns)
+                                    size_t count = 0;
+                                    const uint8_t* curr_ptr = frame.rgb_data.data();
+                                    const uint8_t* prev_ptr = last_rgb.data();
+                                    
+                                    for (size_t i = 0; i < frame.rgb_data.size(); i += step) {
+                                        diff_sum += std::abs((int)curr_ptr[i] - (int)prev_ptr[i]);
+                                        count++;
+                                    }
+                                    
+                                    // Threshold: Average pixel difference < 10 (out of 255)
+                                    // This means the image is roughly 96% similar
+                                    if ((double)diff_sum / count < 10.0) { 
+                                        is_similar = true;
+                                    }
+                                }
+
+                                if (is_similar) {
+                                    emb = last_emb; // Reuse previous embedding (Fast!)
+                                } else {
+                                    emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height); // Run CLIP (Slow)
+                                    last_emb = emb;
+                                    last_rgb = frame.rgb_data;
+                                }
+
                                 hnsw_index::add(
                                     emb,
                                     sess.video_id,
