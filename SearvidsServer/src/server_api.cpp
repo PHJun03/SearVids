@@ -805,31 +805,6 @@ void setup_routes(crow::SimpleApp& app) {
         return json_ok(j);
     });
 
-    // POST /videos/{video_id}/search
-    CROW_ROUTE(app, "/videos/<string>/search").methods(crow::HTTPMethod::POST)
-    ([](const crow::request& req, const std::string& video_id) {
-        {
-            std::lock_guard<std::mutex> lk(g_sessions_mtx);
-            if (g_sessions.find(video_id) == g_sessions.end())
-                return json_err(404, "video not found");
-        }
-
-        auto search_req = parse_search_request(req.body);
-        std::vector<float> query_emb;
-        if (!search_req.embedding.empty()) {
-            query_emb = search_req.embedding;
-        } else if (!search_req.query.empty()) {
-            try { query_emb = get_clip().encodeText(search_req.query); }
-            catch (...) { return json_err(500, "CLIP encoding failed"); }
-        } else {
-            return json_err(400, "query or embedding required");
-        }
-
-        auto hnsw_results = hnsw_index::search(query_emb, search_req.topk);
-        auto api_results = filter_results(hnsw_results, search_req.query);
-        return create_search_response(api_results);
-    });
-
     // GET /videos/{video_id}/thumbnail?timestamp=12345
     CROW_ROUTE(app, "/videos/<string>/thumbnail").methods(crow::HTTPMethod::GET)
     ([](const crow::request& req, const std::string& video_id) {

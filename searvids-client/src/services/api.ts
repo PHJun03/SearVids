@@ -4,7 +4,7 @@
  */
 
 import axios from 'axios';
-import type { VideoWithTags, VideoTag, SearchParams, PaginatedResponse, AnalyzeRequest } from '../types';
+import type { VideoWithTags, VideoTag, AnalyzeRequest } from '../types';
 
 const API_BASE_URL = "/api";
 
@@ -38,14 +38,6 @@ export type SearchResult = {
 export type SearchResponse = { status: string; count?: number; results: SearchResult[] };
 
 export const videoApi = {
-  searchVideos: async (params: SearchParams) => {
-    const response = await api.get<PaginatedResponse<VideoWithTags>>('/videos/search', {
-      params,
-    });
-    
-    return response.data;
-  },
-
   getVideo: async (id: number) => {
     const response = await api.get<VideoWithTags>(`/videos/${id}`);
     return response.data;
