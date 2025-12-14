@@ -189,17 +189,20 @@ export default function Home() {
           // Determine display properties
           const audioItem = group.items.find(i => i.caption !== 'visual_frame');
           const visualItems = group.items.filter(i => i.caption === 'visual_frame');
+          const hasAudio = !!audioItem;
+          const hasVisual = visualItems.length > 0;
           
-          // Use audio caption if available, otherwise "Visual Match"
-          const caption = audioItem ? audioItem.caption : 'Visual Match';
+          // Construct caption: show both if available
+          let caption = 'Visual Match';
+          if (hasAudio) {
+            caption = hasVisual ? `Visual Match • ${audioItem!.caption}` : audioItem!.caption;
+          }
           
           // Find best visual item for thumbnail, or fallback to first item
           const bestVisual = visualItems.sort((a, b) => b.similarity - a.similarity)[0];
           const thumbnailItem = bestVisual || group.items[0];
           
           const maxScore = Math.max(...group.items.map(i => i.similarity));
-          const hasAudio = !!audioItem;
-          const hasVisual = visualItems.length > 0;
 
           return (
             <div key={`group-${group.start}`} className="flex gap-3 items-center bg-gray-800/70 p-3 rounded-xl">
