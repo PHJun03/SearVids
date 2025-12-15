@@ -16,6 +16,9 @@ extern "C" {
 #include <libavutil/channel_layout.h>
 #include <libswscale/swscale.h>
 #include <libswresample/swresample.h>
+#include <libavfilter/avfilter.h>
+#include <libavfilter/buffersrc.h>
+#include <libavfilter/buffersink.h>
 }
 
 #include <memory>
@@ -606,7 +609,7 @@ void extract_frames_with_callback(const std::string& video_path,
                                   int64_t end_time_ms,
                                   int target_width,
                                   int target_height,
-                                  bool use_keyframes) {
+                                  FrameExtractionMethod method) {
     init_ffmpeg();
 
     // Get video info first
@@ -625,9 +628,9 @@ void extract_frames_with_callback(const std::string& video_path,
         throw std::runtime_error("Invalid time range: start >= end");
     }
 
-    // Calculate frame timestamps if not using keyframes
+    // Calculate frame timestamps if using INTERVAL
     std::vector<int64_t> timestamps;
-    if (!use_keyframes) {
+    if (method == FrameExtractionMethod::INTERVAL) {
         int64_t interval_ms = static_cast<int64_t>(interval_seconds * 1000.0);
         
         for (int64_t t = start_time_ms; t < end_time_ms; t += interval_ms) {
@@ -639,8 +642,10 @@ void extract_frames_with_callback(const std::string& video_path,
 
         std::cout << "Extracting " << timestamps.size() << " frames from " 
                   << video_path << " (interval: " << interval_seconds << "s)" << std::endl;
-    } else {
+    } else if (method == FrameExtractionMethod::KEYFRAMES) {
         std::cout << "Extracting keyframes from " << video_path << std::endl;
+    } else {
+        std::cout << "Extracting scene-change frames from " << video_path << std::endl;
     }
 
     // Open format context
@@ -703,15 +708,59 @@ void extract_frames_with_callback(const std::string& video_path,
     int ret = 0;
     int extracted_count = 0;
 
+    // Setup Scene Detection Filter if needed
+    AVFilterGraph* filter_graph = nullptr;
+    AVFilterContext* buffersrc_ctx = nullptr;
+    AVFilterContext* buffersink_ctx = nullptr;
+    
+    if (method == FrameExtractionMethod::SCENE_DETECT) {
+        filter_graph = avfilter_graph_alloc();
+        const AVFilter* buffersrc = avfilter_get_by_name("buffer");
+        const AVFilter* buffersink = avfilter_get_by_name("buffersink");
+        
+        char args[512];
+        snprintf(args, sizeof(args),
+            "video_size=%dx%d:pix_fmt=%d:time_base=%d/%d:pixel_aspect=%d/%d",
+            codec_ctx->width, codec_ctx->height, codec_ctx->pix_fmt,
+            video_stream->time_base.num, video_stream->time_base.den,
+            codec_ctx->sample_aspect_ratio.num, codec_ctx->sample_aspect_ratio.den);
+
+        if (avfilter_graph_create_filter(&buffersrc_ctx, buffersrc, "in", args, nullptr, filter_graph) < 0) {
+            throw std::runtime_error("Failed to create buffer source");
+        }
+        if (avfilter_graph_create_filter(&buffersink_ctx, buffersink, "out", nullptr, nullptr, filter_graph) < 0) {
+            throw std::runtime_error("Failed to create buffer sink");
+        }
+
+        // Scene detection filter: select frames where scene change score > 0.3
+        AVFilterInOut* outputs = avfilter_inout_alloc();
+        AVFilterInOut* inputs = avfilter_inout_alloc();
+        outputs->name = av_strdup("in");
+        outputs->filter_ctx = buffersrc_ctx;
+        outputs->pad_idx = 0;
+        outputs->next = nullptr;
+        inputs->name = av_strdup("out");
+        inputs->filter_ctx = buffersink_ctx;
+        inputs->pad_idx = 0;
+        inputs->next = nullptr;
+
+        if (avfilter_graph_parse_ptr(filter_graph, "select='gt(scene,0.3)'", &inputs, &outputs, nullptr) < 0) {
+            throw std::runtime_error("Failed to parse filter graph");
+        }
+        if (avfilter_graph_config(filter_graph, nullptr) < 0) {
+            throw std::runtime_error("Failed to config filter graph");
+        }
+        avfilter_inout_free(&inputs);
+        avfilter_inout_free(&outputs);
+    }
+
     while (av_read_frame(fmt_ctx.get(), pkt) >= 0) {
-        if (!use_keyframes && current_target_idx >= timestamps.size()) break;
+        if (method == FrameExtractionMethod::INTERVAL && current_target_idx >= timestamps.size()) break;
         if (max_frames > 0 && extracted_count >= max_frames) break;
 
         if (pkt->stream_index == video_stream_idx) {
             // Optimization: If using keyframes, skip non-keyframe packets
-            // Note: Some codecs might need previous frames even for keyframes if they are not IDR, 
-            // but generally skipping non-key packets is safe for keyframe extraction.
-            if (use_keyframes && !(pkt->flags & AV_PKT_FLAG_KEY)) {
+            if (method == FrameExtractionMethod::KEYFRAMES && !(pkt->flags & AV_PKT_FLAG_KEY)) {
                 av_packet_unref(pkt);
                 continue;
             }
@@ -737,19 +786,36 @@ void extract_frames_with_callback(const std::string& video_path,
 
                 bool extract_this = false;
 
-                if (use_keyframes) {
+                if (method == FrameExtractionMethod::KEYFRAMES) {
                     if (frame_ms >= start_time_ms && (end_time_ms == 0 || frame_ms < end_time_ms)) {
-                        // Double check if it's a keyframe (packet flag should be enough but frame has it too)
                         if (frame->key_frame) {
                             extract_this = true;
                         }
                     }
-                } else {
+                } else if (method == FrameExtractionMethod::INTERVAL) {
                     // Check if this frame matches our target timestamp
                     while (current_target_idx < timestamps.size() && 
                            frame_ms >= timestamps[current_target_idx]) {
                         extract_this = true;
                         current_target_idx++;
+                    }
+                } else if (method == FrameExtractionMethod::SCENE_DETECT) {
+                    if (frame_ms >= start_time_ms && (end_time_ms == 0 || frame_ms < end_time_ms)) {
+                        // Feed frame to filter graph
+                        if (av_buffersrc_add_frame_flags(buffersrc_ctx, frame, AV_BUFFERSRC_FLAG_KEEP_REF) >= 0) {
+                            AVFrame* filt_frame = av_frame_alloc();
+                            while (true) {
+                                int f_ret = av_buffersink_get_frame(buffersink_ctx, filt_frame);
+                                if (f_ret == AVERROR(EAGAIN) || f_ret == AVERROR_EOF) break;
+                                if (f_ret < 0) break;
+
+                                // If we got a frame here, it passed the select filter (scene change)
+                                extract_this = true;
+                                av_frame_unref(filt_frame); // We use original 'frame' for extraction to keep logic simple
+                                break; // Found a scene change, extract current 'frame'
+                            }
+                            av_frame_free(&filt_frame);
+                        }
                     }
                 }
 
@@ -782,8 +848,11 @@ void extract_frames_with_callback(const std::string& video_path,
                         callback(frame_data);
                     }
 
-                    if (use_keyframes) {
+                    if (method == FrameExtractionMethod::KEYFRAMES) {
                         std::cout << "Extracted keyframe " << (extracted_count + 1) 
+                                  << " at " << frame_ms << "ms" << std::endl;
+                    } else if (method == FrameExtractionMethod::SCENE_DETECT) {
+                        std::cout << "Extracted scene frame " << (extracted_count + 1) 
                                   << " at " << frame_ms << "ms" << std::endl;
                     } else {
                         std::cout << "Extracted frame " << current_target_idx // already incremented
@@ -797,6 +866,10 @@ void extract_frames_with_callback(const std::string& video_path,
             }
         }
         av_packet_unref(pkt);
+    }
+    
+    if (filter_graph) {
+        avfilter_graph_free(&filter_graph);
     }
 
     // Cleanup
@@ -812,7 +885,7 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
                                       int64_t end_time_ms,
                                       int target_width,
                                       int target_height,
-                                      bool use_keyframes) {
+                                      FrameExtractionMethod method) {
     std::vector<FrameData> results;
     extract_frames_with_callback(
         video_path,
@@ -825,7 +898,7 @@ std::vector<FrameData> extract_frames(const std::string& video_path,
         end_time_ms,
         target_width,
         target_height,
-        use_keyframes
+        method
     );
     return results;
 }

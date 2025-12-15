@@ -217,7 +217,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                     [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
                                         frame_queue.push({frame, false});
                                     },
-                                    2.0, 0, 0, 0, 224, 224, true
+                                    2.0, 0, 0, 0, 224, 224, ffmpeg_decoder::FrameExtractionMethod::SCENE_DETECT
                                 );
                                 frame_queue.push({{}, true});
                                 if (consumer_thread.joinable()) consumer_thread.join();
@@ -447,7 +447,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                         [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
                             frame_queue.push({frame, false});
                         },
-                        2.0, 0, 0, 0, 224, 224, true
+                        2.0, 0, 0, 0, 224, 224, ffmpeg_decoder::FrameExtractionMethod::SCENE_DETECT
                     );
                     
                     // Signal end
