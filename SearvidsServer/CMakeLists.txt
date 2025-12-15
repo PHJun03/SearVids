@@ -111,19 +111,9 @@ add_library(downloader STATIC
 target_link_libraries(downloader PRIVATE CURL::libcurl)
 
 
-# ========== Add OpenCV ==========
-find_package(OpenCV REQUIRED)
-
 # ========== Add Server API ==========
-# Crow(HTTP Framework)
-include(FetchContent)
-
-FetchContent_Declare(
-    Crow
-    GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
-    GIT_TAG v1.2.0
-)
-FetchContent_MakeAvailable(Crow)
+# Crow
+find_package(Crow REQUIRED)
 
 # nlohmann_json
 find_package(nlohmann_json 3.2.0 REQUIRED)
@@ -132,6 +122,9 @@ add_library(server_api STATIC
     src/server_api.cpp
     src/server_api.h
 )
+
+# OpenCV
+find_package(OpenCV REQUIRED)
 
 target_include_directories(server_api PRIVATE ${PROJECT_SOURCE_DIR}/src)
 

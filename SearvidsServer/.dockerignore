@@ -1,0 +1,8 @@
+build/
+.git/
+.venv/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+tests/
