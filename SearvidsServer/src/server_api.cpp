@@ -4,6 +4,11 @@
  */
 
 #include "server_api.h"
+
+#ifdef DELETE
+#undef DELETE
+#endif
+
 #include <crow/multipart.h>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
@@ -660,19 +665,9 @@ static std::vector<SearchResult> filter_results(const std::vector<hnsw_index::Ti
 
 void setup_routes(crow::SimpleApp& app) {
     // WebSocket Route
-    CROW_WEBSOCKET_ROUTE(app, "/ws/videos/<string>/status")
+    CROW_WEBSOCKET_ROUTE(app, "/api/ws/videos/<string>/status")
     .onopen([&](crow::websocket::connection& conn) {
-        // We can't easily get the video_id from the connection object in onopen in older Crow versions?
-        // But the route has <string>.
-        // Crow passes args to the handler.
-        // Wait, CROW_WEBSOCKET_ROUTE syntax with args:
-        // .onopen([&](crow::websocket::connection& conn) { ... })
-        // It doesn't pass the args to onopen.
-        // We need to parse it from conn.get_url()? No.
-        // Actually, Crow's websocket route doesn't support capturing args in onopen easily.
-        // But we can use a lambda that captures nothing?
-        // Let's check Crow documentation or source if available.
-        // Assuming we can't get it easily, we might need the client to send a "subscribe" message.
+        // Crow doesn't easily pass route args to onopen, so we wait for a "subscribe" message.
     })
     .onmessage([&](crow::websocket::connection& conn, const std::string& data, bool is_binary) {
         if (is_binary) return;
