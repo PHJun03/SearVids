@@ -38,8 +38,15 @@ def main():
         compute_type = "float16"
 
     try:
-        # download_root can be used to store models in /app/models
-        model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root="/app/models/faster_whisper")
+        # Check if local model exists
+        local_model_path = f"/app/models/faster_whisper/{model_size}"
+        if os.path.exists(local_model_path):
+            print(f"Loading local Whisper model from {local_model_path}...")
+            model = WhisperModel(local_model_path, device=device, compute_type=compute_type)
+        else:
+            print(f"Downloading Whisper model {model_size}...")
+            # download_root can be used to store models in /app/models
+            model = WhisperModel(model_size, device=device, compute_type=compute_type, download_root="/app/models/faster_whisper")
     except Exception as e:
         print(f"Error loading model: {e}", file=sys.stderr)
         sys.exit(1)

@@ -1,8 +1,8 @@
 services:
   backend:
     build: 
-      context: ./SearvidsServer
-      dockerfile: Dockerfile.local
+      context: .
+      dockerfile: SearvidsServer/Dockerfile.local
     container_name: searvids-backend-local
     ports:
       - "8080:8080"

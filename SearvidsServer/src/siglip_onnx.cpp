@@ -3,8 +3,8 @@
  * All rights reserved.
  */
 
-// src/clip_onnx.cpp
-#include "clip_onnx.h"
+// src/siglip_onnx.cpp
+#include "siglip_onnx.h"
 
 #include <array>
 #include <cmath>
@@ -28,13 +28,14 @@
 using namespace std::string_literals;
 
 namespace {
+    // SigLIP / Optimum ONNX names
     static constexpr const char* TEXT_INPUT   = "input_ids";
-    static constexpr const char* TEXT_OUTPUT  = "last_hidden_state";
-    static constexpr const char* VISION_INPUT = "image";
-    static constexpr const char* VISION_OUTPUT = "image_embedding";
+    static constexpr const char* TEXT_OUTPUT  = "pooler_output"; // or "last_hidden_state" if pooler not present
+    static constexpr const char* VISION_INPUT = "pixel_values";
+    static constexpr const char* VISION_OUTPUT = "pooler_output"; // or "image_embeds"
 }
 
-namespace clip_onnx {
+namespace siglip_onnx {
 
 static std::wstring to_wstring_if_windows(const std::string& s) {
 #ifdef _WIN32
@@ -48,11 +49,11 @@ static std::wstring to_wstring_if_windows(const std::string& s) {
  * Constructor: loads two ONNX sessions (text + vision).
  * If device_gpu is true, attempts to enable CUDA execution provider.
  */
-ClipOnnx::ClipOnnx(const std::string& text_model_path,
+SiglipOnnx::SiglipOnnx(const std::string& text_model_path,
                    const std::string& vision_model_path,
                    bool device_gpu,
                    int image_size)
-    : env_(ORT_LOGGING_LEVEL_WARNING, "clip_onnx"),
+    : env_(ORT_LOGGING_LEVEL_WARNING, "siglip_onnx"),
       use_gpu_(device_gpu),
       image_size_(image_size)
 {
@@ -65,12 +66,12 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
 #ifdef USE_CUDA  // optional compile-time guard if you add it
             OrtCUDAProviderOptions cuda_opts;
             session_options_.AppendExecutionProvider_CUDA(cuda_opts);
-            std::cout << "[clip_onnx] Using CUDA Execution Provider\n";
+            std::cout << "[siglip_onnx] Using CUDA Execution Provider\n";
 #else
             try {
                 OrtCUDAProviderOptions cuda_options;
                 session_options_.AppendExecutionProvider_CUDA(cuda_options);
-                std::cout << "[clip_onnx] CUDA EP appended (if available)\n";
+                std::cout << "[siglip_onnx] CUDA EP appended (if available)\n";
 
 #ifdef USE_TENSORRT
                 // Attempt to append TensorRT Execution Provider after CUDA
@@ -83,18 +84,18 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
                     options["trt_engine_cache_path"] = "tensorrt_cache";
                     trt_options.Update(options);
                     session_options_.AppendExecutionProvider_TensorRT_V2(*trt_options);
-                    std::cout << "[clip_onnx] Appended TensorRT Execution Provider (FP16 & Cache Enabled)\n";
+                    std::cout << "[siglip_onnx] Appended TensorRT Execution Provider (FP16 & Cache Enabled)\n";
                 } catch (const Ort::Exception& e) {
-                    std::cerr << "[clip_onnx] Warning: TensorRT EP could not be appended. ONNX Runtime will fall back to other EPs. Error: " << e.what() << "\n";
+                    std::cerr << "[siglip_onnx] Warning: TensorRT EP could not be appended. ONNX Runtime will fall back to other EPs. Error: " << e.what() << "\n";
                 }
 #endif
             } catch (...) {
-                std::cerr << "[clip_onnx] Warning: CUDA EP append failed; falling back to CPU\n";
+                std::cerr << "[siglip_onnx] Warning: CUDA EP append failed; falling back to CPU\n";
                 use_gpu_ = false;
             }
 #endif
         } else {
-            std::cout << "[clip_onnx] Using CPU Execution Provider\n";
+            std::cout << "[siglip_onnx] Using CPU Execution Provider\n";
         }
 
         // Create sessions: use wide-string path on Windows (some Ort builds expect wchar_t)
@@ -116,23 +117,27 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
         // Auto-detect input names if possible
         Ort::AllocatorWithDefaultOptions allocator;
         
-        std::cout << "[clip_onnx] Text Model Inputs:\n";
+        std::cout << "[siglip_onnx] Text Model Inputs:\n";
         for(size_t i=0; i<text_session_->GetInputCount(); ++i) {
             auto name = text_session_->GetInputNameAllocated(i, allocator);
-            std::cout << "  " << i << ": " << name.get() << "\n";
+            std::string sname = name.get();
+            std::cout << "  " << i << ": " << sname << "\n";
+            if (sname == "attention_mask") {
+                text_has_attention_mask_ = true;
+            }
         }
-        std::cout << "[clip_onnx] Text Model Outputs:\n";
+        std::cout << "[siglip_onnx] Text Model Outputs:\n";
         for(size_t i=0; i<text_session_->GetOutputCount(); ++i) {
             auto name = text_session_->GetOutputNameAllocated(i, allocator);
             std::cout << "  " << i << ": " << name.get() << "\n";
         }
 
-        std::cout << "[clip_onnx] Vision Model Inputs:\n";
+        std::cout << "[siglip_onnx] Vision Model Inputs:\n";
         for(size_t i=0; i<vision_session_->GetInputCount(); ++i) {
             auto name = vision_session_->GetInputNameAllocated(i, allocator);
             std::cout << "  " << i << ": " << name.get() << "\n";
         }
-        std::cout << "[clip_onnx] Vision Model Outputs:\n";
+        std::cout << "[siglip_onnx] Vision Model Outputs:\n";
         for(size_t i=0; i<vision_session_->GetOutputCount(); ++i) {
             auto name = vision_session_->GetOutputNameAllocated(i, allocator);
             std::cout << "  " << i << ": " << name.get() << "\n";
@@ -156,8 +161,8 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
             vision_output_name_ = name_ptr.get();
         }
 
-        std::cout << "[clip_onnx] Loaded text model: " << text_model_path << "\n";
-        std::cout << "[clip_onnx] Loaded vision model: " << vision_model_path << "\n";
+        std::cout << "[siglip_onnx] Loaded text model: " << text_model_path << "\n";
+        std::cout << "[siglip_onnx] Loaded vision model: " << vision_model_path << "\n";
     } catch (const Ort::Exception& e) {
         throw std::runtime_error(std::string("ONNX Runtime error during session creation: ") + e.what());
     } catch (const std::exception& e) {
@@ -165,7 +170,7 @@ ClipOnnx::ClipOnnx(const std::string& text_model_path,
     }
 }
 
-ClipOnnx::~ClipOnnx() = default;
+SiglipOnnx::~SiglipOnnx() = default;
 
 /* ---------------------------
    Text / Vision runners
@@ -177,7 +182,7 @@ ClipOnnx::~ClipOnnx() = default;
  * token_type_ids, etc. Here we assume a single input "input_ids" and that model returns
  * a single float output that can be averaged over sequence dimension if needed.
  */
-std::vector<float> ClipOnnx::runTextSession(const std::vector<int64_t>& input_ids,
+std::vector<float> SiglipOnnx::runTextSession(const std::vector<int64_t>& input_ids,
                                             const std::vector<int64_t>& input_shape)
 {
     if (!text_session_) throw std::runtime_error("Text session not initialized");
@@ -202,14 +207,24 @@ std::vector<float> ClipOnnx::runTextSession(const std::vector<int64_t>& input_id
         input_shape.data(),
         input_shape.size());
 
-    const char* input_names[] = { text_input_name_.c_str(), "attention_mask" };
-    const char* output_names[] = { text_output_name_.c_str() };
+    std::vector<const char*> input_names;
+    input_names.reserve(2);
+    input_names.push_back(text_input_name_.c_str());
 
-    Ort::Value input_tensors[] = { std::move(input_tensor), std::move(attention_mask_tensor) };
+    std::vector<Ort::Value> input_tensors;
+    input_tensors.reserve(2);
+    input_tensors.push_back(std::move(input_tensor));
+
+    if (text_has_attention_mask_) {
+        input_names.push_back("attention_mask");
+        input_tensors.push_back(std::move(attention_mask_tensor));
+    }
+
+    const char* output_names[] = { text_output_name_.c_str() };
 
     try {
         auto output_tensors = text_session_->Run(Ort::RunOptions{nullptr},
-                                                 input_names, input_tensors, 2,
+                                                 input_names.data(), input_tensors.data(), input_names.size(),
                                                  output_names, 1);
         if (output_tensors.empty()) throw std::runtime_error("Text model produced no outputs");
 
@@ -244,7 +259,7 @@ std::vector<float> ClipOnnx::runTextSession(const std::vector<int64_t>& input_id
 /**
  * Run vision session. Accepts preprocessed image tensor (NCHW float array) and returns L2-normalized embedding.
  */
-std::vector<float> ClipOnnx::runVisionSession(const std::vector<float>& image_tensor,
+std::vector<float> SiglipOnnx::runVisionSession(const std::vector<float>& image_tensor,
                                               const std::vector<int64_t>& input_shape)
 {
     if (!vision_session_) throw std::runtime_error("Vision session not initialized");
@@ -316,26 +331,19 @@ std::vector<float> ClipOnnx::runVisionSession(const std::vector<float>& image_te
    Public wrapper functions
    --------------------------- */
 
-std::vector<float> ClipOnnx::encodeText(const std::string& text) {
+std::vector<float> SiglipOnnx::encodeText(const std::string& text) {
     // Use Python tokenizer for better accuracy
     auto ids = pythonTokenize(text);
     if (ids.empty()) ids.push_back(0);
     std::vector<int64_t> shape = {1, static_cast<int64_t>(ids.size())};
     auto res = runTextSession(ids, shape);
-    if (!res.empty()) {
-        std::cout << "[DEBUG] Text Emb (" << text.substr(0, 10) << "...): Size=" << res.size() 
-                  << " [" << res[0] << ", " << res[1] << ", ...]" << std::endl;
-    }
     return res;
 }
 
-std::vector<float> ClipOnnx::encodeImageFromFile(const std::string& image_path) {
+std::vector<float> SiglipOnnx::encodeImageFromFile(const std::string& image_path) {
     auto img_tensor = loadAndPreprocessImage(image_path);
     std::vector<int64_t> shape = {1, 3, image_size_, image_size_};
     auto res = runVisionSession(img_tensor, shape);
-    if (!res.empty()) {
-        std::cout << "[DEBUG] Image Emb (File): [" << res[0] << ", " << res[1] << ", ...]" << std::endl;
-    }
     return res;
 }
 
@@ -343,7 +351,7 @@ std::vector<float> ClipOnnx::encodeImageFromFile(const std::string& image_path) 
    Utilities
    --------------------------- */
 
-std::vector<float> ClipOnnx::l2Normalize(const std::vector<float>& v) {
+std::vector<float> SiglipOnnx::l2Normalize(const std::vector<float>& v) {
     double sumsq = 0.0;
     for (float x : v) sumsq += static_cast<double>(x) * static_cast<double>(x);
     double norm = std::sqrt(sumsq);
@@ -353,7 +361,7 @@ std::vector<float> ClipOnnx::l2Normalize(const std::vector<float>& v) {
     return out;
 }
 
-std::vector<int64_t> ClipOnnx::pythonTokenize(const std::string& text) {
+std::vector<int64_t> SiglipOnnx::pythonTokenize(const std::string& text) {
     // Escape quotes in text
     std::string escaped_text;
     for (char c : text) {
@@ -371,7 +379,7 @@ std::vector<int64_t> ClipOnnx::pythonTokenize(const std::string& text) {
     // Use popen to run command and capture output
     std::unique_ptr<FILE, decltype(&pclose)> pipe(popen(cmd.c_str(), "r"), pclose);
     if (!pipe) {
-        std::cerr << "[clip_onnx] Error: popen() failed for tokenizer\n";
+        std::cerr << "[siglip_onnx] Error: popen() failed for tokenizer\n";
         return {}; // Return empty on failure
     }
     
@@ -388,7 +396,7 @@ std::vector<int64_t> ClipOnnx::pythonTokenize(const std::string& text) {
     }
     
     if (tokens.empty()) {
-        std::cerr << "[clip_onnx] Warning: Python tokenizer returned empty.\n";
+        std::cerr << "[siglip_onnx] Warning: Python tokenizer returned empty.\n";
         return {};
     }
     
@@ -401,7 +409,7 @@ std::vector<int64_t> ClipOnnx::pythonTokenize(const std::string& text) {
  *  - nearest-neighbor resize to image_size_
  *  - normalize (mean/std) and produce NCHW float tensor
  */
-std::vector<float> ClipOnnx::loadAndPreprocessImage(const std::string& path) {
+std::vector<float> SiglipOnnx::loadAndPreprocessImage(const std::string& path) {
     int w, h, c;
     unsigned char* img = stbi_load(path.c_str(), &w, &h, &c, 3);
     if (!img) {
@@ -438,7 +446,7 @@ std::vector<float> ClipOnnx::loadAndPreprocessImage(const std::string& path) {
  * Input: RGB24 buffer (width * height * 3), width, height
  * Output: Normalized NCHW float tensor (3 * image_size_ * image_size_)
  */
-std::vector<float> ClipOnnx::preprocessRGBBuffer(const std::vector<uint8_t>& rgb_data,
+std::vector<float> SiglipOnnx::preprocessRGBBuffer(const std::vector<uint8_t>& rgb_data,
                                                   int width,
                                                   int height) {
     // Validate input size
@@ -452,24 +460,45 @@ std::vector<float> ClipOnnx::preprocessRGBBuffer(const std::vector<uint8_t>& rgb
     // Allocate output tensor (NCHW format)
     std::vector<float> output(3 * image_size_ * image_size_);
 
-    // Nearest-neighbor resize + normalize (same logic as loadAndPreprocessImage)
+    // Bilinear resize + normalize
+    float scale_x = (float)width / image_size_;
+    float scale_y = (float)height / image_size_;
+
     for (int y = 0; y < image_size_; ++y) {
-        // Map output y to input y
-        int src_y = (y * height) / image_size_;
-        if (src_y >= height) src_y = height - 1;
+        float src_y = (y + 0.5f) * scale_y - 0.5f;
+        int y0 = (int)std::floor(src_y);
+        int y1 = y0 + 1;
+        float dy = src_y - y0;
+
+        // Clamp coordinates
+        y0 = std::max(0, std::min(y0, height - 1));
+        y1 = std::max(0, std::min(y1, height - 1));
 
         for (int x = 0; x < image_size_; ++x) {
-            // Map output x to input x
-            int src_x = (x * width) / image_size_;
-            if (src_x >= width) src_x = width - 1;
+            float src_x = (x + 0.5f) * scale_x - 0.5f;
+            int x0 = (int)std::floor(src_x);
+            int x1 = x0 + 1;
+            float dx = src_x - x0;
+
+            // Clamp coordinates
+            x0 = std::max(0, std::min(x0, width - 1));
+            x1 = std::max(0, std::min(x1, width - 1));
 
             // Process each channel (R, G, B)
             for (int ch = 0; ch < 3; ++ch) {
-                // Input: HWC format (row-major)
-                size_t src_idx = static_cast<size_t>(src_y * width + src_x) * 3 + ch;
-                
-                // Normalize: [0, 255] -> [0, 1] -> standardize with CLIP mean/std
-                float pixel_value = static_cast<float>(rgb_data[src_idx]) / 255.0f;
+                // Get 4 neighbors
+                float c00 = (float)rgb_data[(y0 * width + x0) * 3 + ch];
+                float c01 = (float)rgb_data[(y0 * width + x1) * 3 + ch];
+                float c10 = (float)rgb_data[(y1 * width + x0) * 3 + ch];
+                float c11 = (float)rgb_data[(y1 * width + x1) * 3 + ch];
+
+                // Interpolate
+                float top = c00 * (1.0f - dx) + c01 * dx;
+                float bottom = c10 * (1.0f - dx) + c11 * dx;
+                float pixel_value = top * (1.0f - dy) + bottom * dy;
+
+                // Normalize: [0, 255] -> [0, 1] -> standardize
+                pixel_value /= 255.0f;
                 float normalized = (pixel_value - mean_[ch]) / std_[ch];
 
                 // Output: NCHW format (channel-major)
@@ -486,7 +515,7 @@ std::vector<float> ClipOnnx::preprocessRGBBuffer(const std::vector<uint8_t>& rgb
 /**
  * Encode image from RGB buffer (wrapper for preprocessRGBBuffer + runVisionSession)
  */
-std::vector<float> ClipOnnx::encodeImage(const std::vector<uint8_t>& rgb_data,
+std::vector<float> SiglipOnnx::encodeImage(const std::vector<uint8_t>& rgb_data,
                                          int width,
                                          int height) {
     // 1) Preprocess RGB buffer to NCHW tensor
@@ -495,25 +524,21 @@ std::vector<float> ClipOnnx::encodeImage(const std::vector<uint8_t>& rgb_data,
     // 2) Run vision session
     std::vector<int64_t> shape = {1, 3, image_size_, image_size_};
     auto res = runVisionSession(img_tensor, shape);
-    if (!res.empty()) {
-        std::cout << "[DEBUG] Image Emb (Buffer): Size=" << res.size() 
-                  << " [" << res[0] << ", " << res[1] << ", ...]" << std::endl;
-    }
     return res;
 }
 
 /* ---------------------------
    Node name setters
    --------------------------- */
-void ClipOnnx::setTextInputName(const std::string& name) { text_input_name_ = name; }
-void ClipOnnx::setTextOutputName(const std::string& name) { text_output_name_ = name; }
-void ClipOnnx::setVisionInputName(const std::string& name) { vision_input_name_ = name; }
-void ClipOnnx::setVisionOutputName(const std::string& name) { vision_output_name_ = name; }
+void SiglipOnnx::setTextInputName(const std::string& name) { text_input_name_ = name; }
+void SiglipOnnx::setTextOutputName(const std::string& name) { text_output_name_ = name; }
+void SiglipOnnx::setVisionInputName(const std::string& name) { vision_input_name_ = name; }
+void SiglipOnnx::setVisionOutputName(const std::string& name) { vision_output_name_ = name; }
 
 /* ---------------------------
    Static helpers
    --------------------------- */
-float ClipOnnx::cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b) {
+float SiglipOnnx::cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b) {
     if (a.size() != b.size()) throw std::runtime_error("cosineSimilarity: vector size mismatch");
     double dot = 0.0, na = 0.0, nb = 0.0;
     for (size_t i = 0; i < a.size(); ++i) {
@@ -526,4 +551,4 @@ float ClipOnnx::cosineSimilarity(const std::vector<float>& a, const std::vector<
     return static_cast<float>(dot / denom);
 }
 
-} // namespace clip_onnx
+} // namespace siglip_onnx

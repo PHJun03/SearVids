@@ -11,7 +11,8 @@
 
 int main(int argc, char** argv) {
     // 1. Initialize HNSW index
-    hnsw_index::create(512, "cosine");
+    // SigLIP uses 768 dimensions (CLIP used 512)
+    hnsw_index::create(768, "cosine");
 
     // 2. Create Crow app
     crow::SimpleApp app;

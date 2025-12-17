@@ -16,7 +16,7 @@
 #include "downloader.h"
 #include "ffmpeg_decoder.h"
 #include "whisper_wrapper.h"
-#include "clip_onnx.h"
+#include "siglip_onnx.h"
 #include "hnsw_index.h"
 
 namespace server_api {

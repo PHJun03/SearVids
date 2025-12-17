@@ -11,24 +11,24 @@
 
 #include <onnxruntime_cxx_api.h>
 
-namespace clip_onnx {
+namespace siglip_onnx {
 
 /**
- * CLIP ONNX wrapper for separated text & vision encoder models.
+ * SigLIP ONNX wrapper for separated text & vision encoder models.
  */
-class ClipOnnx {
+class SiglipOnnx {
 public:
     /**
      * Construct wrapper and load two ONNX models:
      *  - text_model_path: text encoder
      *  - vision_model_path: vision encoder
      */
-    ClipOnnx(const std::string& text_model_path,
+    SiglipOnnx(const std::string& text_model_path,
              const std::string& vision_model_path,
              bool device_gpu = false,
              int image_size = 224);
 
-    ~ClipOnnx();
+    ~SiglipOnnx();
 
     // Encode text -> embedding
     std::vector<float> encodeText(const std::string& text);
@@ -86,9 +86,11 @@ private:
     std::string vision_input_name_ = "pixel_values";
     std::string vision_output_name_ = "image_embeddings";
 
-    // CLIP normalization parameters
-    const std::array<float, 3> mean_{0.48145466f, 0.4578275f, 0.40821073f};
-    const std::array<float, 3> std_{0.26862954f, 0.26130258f, 0.27577711f};
+    bool text_has_attention_mask_ = false;
+
+    // SigLIP normalization parameters (mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+    const std::array<float, 3> mean_{0.5f, 0.5f, 0.5f};
+    const std::array<float, 3> std_{0.5f, 0.5f, 0.5f};
 };
 
 } // namespace clip_onnx

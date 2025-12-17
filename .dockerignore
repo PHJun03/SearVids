@@ -1,0 +1,11 @@
+.git
+.gitignore
+.vscode
+.venv
+__pycache__
+node_modules
+dist
+build
+*.log
+models/hf_cache
+data/

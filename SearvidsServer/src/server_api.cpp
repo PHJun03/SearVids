@@ -58,21 +58,21 @@ void broadcast_status(const std::string& video_id, const VideoSession& sess) {
     }
 }
 
-// Lazy initialize CLIP to avoid loading models during static initialization
-static std::unique_ptr<clip_onnx::ClipOnnx> g_clip_ptr;
-static std::mutex g_clip_mtx;
+// Lazy initialize SigLIP to avoid loading models during static initialization
+static std::unique_ptr<siglip_onnx::SiglipOnnx> g_siglip_ptr;
+static std::mutex g_siglip_mtx;
 
-static clip_onnx::ClipOnnx& get_clip() {
-    std::lock_guard<std::mutex> lock(g_clip_mtx);
-    if (!g_clip_ptr) {
-        g_clip_ptr = std::make_unique<clip_onnx::ClipOnnx>(
-            "/app/models/clip_text_sim.onnx",
-            "/app/models/clip_vision_sim.onnx",
-            true,           // device_gpu
+static siglip_onnx::SiglipOnnx& get_siglip() {
+    std::lock_guard<std::mutex> lock(g_siglip_mtx);
+    if (!g_siglip_ptr) {
+        g_siglip_ptr = std::make_unique<siglip_onnx::SiglipOnnx>(
+            "/app/models/siglip_text/model.onnx",
+            "/app/models/siglip_vision/model.onnx",
+            false,           // device_gpu
             224             // image size
         );
     }
-    return *g_clip_ptr;
+    return *g_siglip_ptr;
 }
 
 // JSON helpers (adds Content-Type and CORS)
@@ -158,7 +158,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                         auto visual_future = std::async(std::launch::async, [&sess, &info, chunk_path, current_start, total_duration_sec]() {
                             if (!info.has_video) return;
                             try {
-                                auto& clip = get_clip();
+                                auto& siglip = get_siglip();
                                 
                                 // Pipeline Parallelism (Producer-Consumer) for Chunk
                                 struct QueueItem {
@@ -183,7 +183,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                     }
                                 } frame_queue;
 
-                                auto consumer_thread = std::thread([&sess, &clip, &frame_queue, current_start, total_duration_sec]() {
+                                auto consumer_thread = std::thread([&sess, &siglip, &frame_queue, current_start, total_duration_sec]() {
                                     while (true) {
                                         if (sess.cancelled) break;
                                         auto item = frame_queue.pop();
@@ -192,7 +192,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                             auto& frame = item.frame;
                                             int64_t real_timestamp_ms = frame.timestamp_ms + (current_start * 1000);
                                             
-                                            auto emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height);
+                                            auto emb = siglip.encodeImage(frame.rgb_data, frame.width, frame.height);
                                             hnsw_index::add(
                                                 emb,
                                                 sess.video_id,
@@ -235,11 +235,11 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                 g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
                                 
                                 std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
-                                auto& clip = get_clip();
+                                auto& siglip = get_siglip();
                                 std::string buffer;
                                 
                                 g_whisper.transcribe_with_callback(audio_path, 
-                                    [&sess, &clip, &re, &buffer, current_start, total_duration_sec](const std::string& chunk) {
+                                    [&sess, &siglip, &re, &buffer, current_start, total_duration_sec](const std::string& chunk) {
                                         if (sess.cancelled) return;
                                         buffer += chunk;
                                         size_t pos;
@@ -262,7 +262,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                                     text.erase(text.find_last_not_of(" \t") + 1);
                                                     
                                                     if (!text.empty()) {
-                                                        auto emb = clip.encodeText(text);
+                                                        auto emb = siglip.encodeText(text);
                                                         hnsw_index::add(emb, sess.video_id, start, end, text);
                                                         sess.indexed_audio_segments++;
                                                         
@@ -342,7 +342,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                 if (!info.has_video) return;
                 try {
                     std::cout << "[" << sess.video_id << "] Extracting visual frames..." << std::endl;
-                    auto& clip = get_clip();
+                    auto& siglip = get_siglip();
                     
                     // Pipeline Parallelism: Producer (FFmpeg) -> Queue -> Consumer (CLIP)
                     struct QueueItem {
@@ -372,7 +372,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                     } frame_queue;
 
                     // Consumer Thread: CLIP Inference & Indexing
-                    auto consumer_thread = std::thread([&sess, &clip, &frame_queue]() {
+                    auto consumer_thread = std::thread([&sess, &siglip, &frame_queue]() {
                         std::vector<uint8_t> last_rgb;
                         std::vector<float> last_emb;
 
@@ -411,7 +411,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                 if (is_similar) {
                                     emb = last_emb; // Reuse previous embedding (Fast!)
                                 } else {
-                                    emb = clip.encodeImage(frame.rgb_data, frame.width, frame.height); // Run CLIP (Slow)
+                                    emb = siglip.encodeImage(frame.rgb_data, frame.width, frame.height); // Run CLIP (Slow)
                                     last_emb = emb;
                                     last_rgb = frame.rgb_data;
                                 }
@@ -482,11 +482,11 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                     
                     // Parse and Index incrementally
                     std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
-                    auto& clip = get_clip();
+                    auto& siglip = get_siglip();
                     std::string buffer;
                     
                     g_whisper.transcribe_with_callback(audio_path, 
-                        [&sess, &clip, &re, &buffer](const std::string& chunk) {
+                        [&sess, &siglip, &re, &buffer](const std::string& chunk) {
                             if (sess.cancelled) return;
                             buffer += chunk;
                             size_t pos;
@@ -496,10 +496,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                 
                                 if (!line.empty() && line.back() == '\r') line.pop_back();
                                 
-                                // Debug: print all lines to debug
-                                if (line.find("-->") == std::string::npos) {
-                                    std::cout << "[Whisper Log] " << line << std::endl;
-                                }
+
 
                                 std::smatch match;
                                 if (std::regex_search(line, match, re)) {
@@ -512,7 +509,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                         text.erase(text.find_last_not_of(" \t") + 1);
                                         
                                         if (!text.empty()) {
-                                            auto emb = clip.encodeText(text);
+                                            auto emb = siglip.encodeText(text);
                                             hnsw_index::add(emb, sess.video_id, start, end, text);
                                             sess.indexed_audio_segments++;
                                             
@@ -635,7 +632,8 @@ static std::vector<SearchResult> filter_results(const std::vector<hnsw_index::Ti
 
         // 2. Threshold
         if (!keep) {
-            float threshold = is_visual ? 0.25f : 0.75f;
+            // Lower thresholds for SigLIP
+            float threshold = is_visual ? 0.02f : 0.15f;
             if (r.similarity >= threshold) {
                 keep = true;
             }
@@ -998,9 +996,9 @@ void setup_routes(crow::SimpleApp& app) {
             emb = sreq.embedding;
         } else {
             try {
-                emb = get_clip().encodeText(sreq.query);
+                emb = get_siglip().encodeText(sreq.query);
             } catch (...) {
-                return json_err(500, "CLIP encoding failed");
+                return json_err(500, "SigLIP encoding failed");
             }
         }
 
@@ -1025,9 +1023,9 @@ void setup_routes(crow::SimpleApp& app) {
             std::vector<float> emb;
             if (sreq.embedding.empty()) {
                 try {
-                    emb = get_clip().encodeText(sreq.query);
+                    emb = get_siglip().encodeText(sreq.query);
                 } catch (const std::exception& e) {
-                    return json_err(500, std::string("CLIP encoding failed: ") + e.what());
+                    return json_err(500, std::string("SigLIP encoding failed: ") + e.what());
                 }
             } else {
                 emb = sreq.embedding;
