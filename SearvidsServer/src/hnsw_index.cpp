@@ -89,6 +89,19 @@ public:
 
     size_t size() const { return entries_.size(); }
 
+    void remove_video(const std::string& video_id) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        for (auto& entry : entries_) {
+            if (entry.video_id == video_id) {
+                // Clear data to "delete" it
+                entry.video_id = "";
+                entry.caption = "";
+                entry.start_time = 0;
+                entry.end_time = 0;
+            }
+        }
+    }
+
 private:
     int dim_;
     std::string space_;
@@ -108,6 +121,12 @@ void create(int dim, const std::string& space) {
 int add(const std::vector<float>& embedding, const std::string& video_id, float start, float end, const std::string& caption) {
     if (!g_index) throw std::runtime_error("Index not created");
     return g_index->add(embedding, video_id, start, end, caption);
+}
+
+void remove_video(const std::string& video_id) {
+    if (g_index) {
+        g_index->remove_video(video_id);
+    }
 }
 
 std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk, const std::string& video_id_filter) {

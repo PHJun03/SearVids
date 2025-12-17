@@ -4,6 +4,7 @@
  */
 
 #include "server_api.h"
+#include <crow/multipart.h>
 #include <nlohmann/json.hpp>
 #include <opencv2/opencv.hpp>
 #include <thread>
@@ -104,13 +105,18 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
     sess.progress_percent = 0;
 
     try {
-        if (!downloader::is_valid_url(sess.source_url)) {
+        bool is_local = sess.source_url.rfind("local:", 0) == 0;
+
+        if (!is_local && !downloader::is_valid_url(sess.source_url)) {
             throw std::runtime_error("Invalid URL");
         }
 
         // Try to get duration for chunk-based processing
-        std::cout << "[" << sess.video_id << "] Getting video duration..." << std::endl;
-        int64_t total_duration_sec = downloader::get_duration(sess.source_url);
+        int64_t total_duration_sec = 0;
+        if (!is_local) {
+            std::cout << "[" << sess.video_id << "] Getting video duration..." << std::endl;
+            total_duration_sec = downloader::get_duration(sess.source_url);
+        }
         
         // If duration is available, use Chunk-Based Processing
         if (total_duration_sec > 0) {
@@ -302,31 +308,37 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
             
         } else {
             // Fallback to Original Logic (Full Download)
-            auto filename = downloader::extract_filename(sess.source_url);
-            if (filename.empty()) filename = "input.mp4";
-            std::string out = std::string("data/") + sess.video_id + "_" + filename;
+            if (!is_local) {
+                auto filename = downloader::extract_filename(sess.source_url);
+                if (filename.empty()) filename = "input.mp4";
+                std::string out = std::string("data/") + sess.video_id + "_" + filename;
 
-            std::cout << "[" << sess.video_id << "] Downloading: " << sess.source_url << std::endl;
+                std::cout << "[" << sess.video_id << "] Downloading: " << sess.source_url << std::endl;
 
-            bool ok = downloader::download_with_retry(sess.source_url, out, 3);
-            if (!ok) throw std::runtime_error("Download failed after 3 retries");
-            
-            sess.local_path = out;
-            sess.progress_percent = 10;
-            std::cout << "[" << sess.video_id << "] Download complete: " << out << std::endl;
+                bool ok = downloader::download_with_retry(sess.source_url, out, 3);
+                if (!ok) throw std::runtime_error("Download failed after 3 retries");
+                
+                sess.local_path = out;
+                sess.progress_percent = 10;
+                std::cout << "[" << sess.video_id << "] Download complete: " << out << std::endl;
+            } else {
+                // Local file, path is already set
+                std::cout << "[" << sess.video_id << "] Using local file: " << sess.local_path << std::endl;
+                sess.progress_percent = 10;
+            }
 
             // 2) Probe video metadata (10-15%)
             sess.current_stage = "probing";
             std::cout << "[" << sess.video_id << "] Probing video metadata..." << std::endl;
             
-            auto info = ffmpeg_decoder::probe(out);
+            auto info = ffmpeg_decoder::probe(sess.local_path);
             
             if (!info.has_video && !info.has_audio) {
                 throw std::runtime_error("No valid media streams found");
             }
             
             sess.duration_ms = info.duration_ms;
-            sess.nb_frames = (info.nb_frames > 0) ? info.nb_frames : ffmpeg_decoder::count_frames(out);
+            sess.nb_frames = (info.nb_frames > 0) ? info.nb_frames : ffmpeg_decoder::count_frames(sess.local_path);
             sess.progress_percent = 15;
 
             std::cout << "[" << sess.video_id << "] Video info: "
@@ -1037,6 +1049,84 @@ void setup_routes(crow::SimpleApp& app) {
         } catch (const std::exception& e) {
             return json_err(500, std::string("Search failed: ") + e.what());
         }
+    });
+
+    // POST /api/upload
+    CROW_ROUTE(app, "/api/upload").methods(crow::HTTPMethod::POST)
+    ([](const crow::request& req) {
+        crow::multipart::message msg(req);
+        std::string filename;
+        std::string content;
+        
+        for (const auto& part : msg.parts) {
+            if (part.headers.count("Content-Disposition")) {
+                auto it = part.headers.find("Content-Disposition");
+                auto param_it = it->second.params.find("filename");
+                if (param_it != it->second.params.end()) {
+                    filename = param_it->second;
+                    content = part.body;
+                    break;
+                }
+            }
+        }
+
+        if (content.empty()) return json_err(400, "No file uploaded");
+
+        auto now = std::chrono::system_clock::now().time_since_epoch().count();
+        std::string vid = "local_" + std::to_string(now);
+        
+        std::string path = "data/" + vid + ".mp4";
+        std::ofstream out(path, std::ios::binary);
+        out.write(content.data(), content.size());
+        out.close();
+
+        {
+            std::lock_guard<std::mutex> lk(g_sessions_mtx);
+            for (auto& kv : g_sessions) {
+                if (kv.first != vid && kv.second->analyzing) {
+                    kv.second->cancelled = true;
+                }
+            }
+
+            auto sess = std::make_shared<VideoSession>();
+            sess->video_id = vid;
+            sess->source_url = "local:" + filename;
+            sess->local_path = path;
+            g_sessions[vid] = sess;
+            
+            std::thread([sess]() {
+                analyze_video_async(sess);
+            }).detach();
+        }
+
+        nlohmann::json resp = nlohmann::json::object();
+        resp["status"] = "accepted";
+        resp["video_id"] = vid;
+        return json_ok(resp, 202);
+    });
+
+    // DELETE /api/videos/<video_id>
+    CROW_ROUTE(app, "/api/videos/<string>").methods(crow::HTTPMethod::DELETE)
+    ([](const std::string& video_id) {
+        std::lock_guard<std::mutex> lk(g_sessions_mtx);
+        auto it = g_sessions.find(video_id);
+        if (it != g_sessions.end()) {
+            it->second->cancelled = true;
+            if (!it->second->local_path.empty() && std::filesystem::exists(it->second->local_path)) {
+                std::filesystem::remove(it->second->local_path);
+            }
+            g_sessions.erase(it);
+        }
+        
+        hnsw_index::remove_video(video_id);
+        
+        for (const auto& entry : std::filesystem::directory_iterator("data")) {
+            if (entry.path().filename().string().find(video_id) != std::string::npos) {
+                std::filesystem::remove(entry.path());
+            }
+        }
+
+        return crow::response(200);
     });
 
     // GET /api/health

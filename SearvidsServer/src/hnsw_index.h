@@ -20,6 +20,7 @@ struct TimelineEntry {
 
 void create(int dim, const std::string& space = "cosine");
 int add(const std::vector<float>& embedding, const std::string& video_id, float start, float end, const std::string& caption);
+void remove_video(const std::string& video_id);
 std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5, const std::string& video_id_filter = "");
 size_t size();
 

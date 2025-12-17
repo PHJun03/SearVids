@@ -65,6 +65,19 @@ export const videoApi = {
     return response.data;
   },
 
+  uploadVideo: async (file: File) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await api.post<AnalyzeResponse>('/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  cleanupVideo: async (videoId: string) => {
+    await api.delete(`/videos/${videoId}`);
+  },
+
   getAnalyzeStatus: async (videoId: string) => {
     const response = await api.get<AnalyzeStatus>(`/videos/${videoId}/status`);
     return response.data;

@@ -3,18 +3,21 @@
  * All rights reserved.
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useMutation, useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query';
-import { Search, Video, ArrowRight, Loader2 } from 'lucide-react';
+import { Search, Video, ArrowRight, Loader2, Upload, FileVideo, X } from 'lucide-react';
 import { videoApi, type AnalyzeResponse, type AnalyzeStatus, type SearchResponse } from '../services/api';
 import Error from '../components/common/Error';
 
 export default function Home() {
-  const [url, setUrl] = useState(() => sessionStorage.getItem('searvids_url') || '');
-  const [keyword, setKeyword] = useState(() => sessionStorage.getItem('searvids_keyword') || '');
-  const [videoId, setVideoId] = useState<string | null>(() => sessionStorage.getItem('searvids_videoId'));
-  const [analyzedUrl, setAnalyzedUrl] = useState<string | null>(() => sessionStorage.getItem('searvids_analyzedUrl'));
+  const [activeTab, setActiveTab] = useState<'url' | 'file'>('url');
+  const [url, setUrl] = useState('');
+  const [file, setFile] = useState<File | null>(null);
+  const [keyword, setKeyword] = useState('');
+  const [videoId, setVideoId] = useState<string | null>(null);
+  const [analyzedUrl, setAnalyzedUrl] = useState<string | null>(null);
   const [dots, setDots] = useState('');
+  const [isDragging, setIsDragging] = useState(false);
   const queryClient = useQueryClient();
 
   useEffect(() => {
@@ -24,40 +27,87 @@ export default function Home() {
     return () => clearInterval(interval);
   }, []);
 
-  // Persist state to sessionStorage
+  // Cleanup local video on refresh/close
   useEffect(() => {
-    sessionStorage.setItem('searvids_url', url);
-  }, [url]);
+    const handleBeforeUnload = () => {
+      if (videoId && videoId.startsWith('local_')) {
+        // Use fetch with keepalive for reliable cleanup on unload
+        fetch(`/api/videos/${videoId}`, { method: 'DELETE', keepalive: true });
+      }
+    };
 
-  useEffect(() => {
-    sessionStorage.setItem('searvids_keyword', keyword);
-  }, [keyword]);
-
-  useEffect(() => {
-    if (videoId) {
-      sessionStorage.setItem('searvids_videoId', videoId);
-    } else {
-      sessionStorage.removeItem('searvids_videoId');
-    }
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => {
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      // Also cleanup on component unmount if we want strict "session" behavior?
+      // No, unmount happens on navigation too.
+    };
   }, [videoId]);
 
-  useEffect(() => {
-    if (analyzedUrl) {
-      sessionStorage.setItem('searvids_analyzedUrl', analyzedUrl);
-    } else {
-      sessionStorage.removeItem('searvids_analyzedUrl');
-    }
-  }, [analyzedUrl]);
-
-  // start analyze
+  // start analyze url
   const {
-    mutate,
-    isPending,
-    error: analyzeError,
+    mutate: analyzeUrl,
+    isPending: isUrlPending,
+    error: urlError,
   } = useMutation<AnalyzeResponse, Error, { url: string; query: string }>({
     mutationFn: videoApi.analyzeVideo,
-    onSuccess: (resp) => setVideoId(resp.video_id),
+    onSuccess: (resp) => {
+      setVideoId(resp.video_id);
+      setAnalyzedUrl(url);
+    },
   });
+
+  // upload file
+  const {
+    mutate: uploadFile,
+    isPending: isUploadPending,
+    error: uploadError,
+  } = useMutation<AnalyzeResponse, Error, File>({
+    mutationFn: videoApi.uploadVideo,
+    onSuccess: (resp) => {
+      setVideoId(resp.video_id);
+      setAnalyzedUrl(file?.name || 'Local Video');
+    },
+  });
+
+  const isPending = isUrlPending || isUploadPending;
+  const analyzeError = urlError || uploadError;
+
+  const handleAnalyze = () => {
+    queryClient.removeQueries({ queryKey: ['search-chapters'] });
+    setVideoId(null);
+    
+    if (activeTab === 'url' && url) {
+      setAnalyzedUrl(url);
+      analyzeUrl({ url, query: '' });
+    } else if (activeTab === 'file' && file) {
+      setAnalyzedUrl(file.name);
+      uploadFile(file);
+    }
+  };
+
+  const handleDragOver = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(true);
+  }, []);
+
+  const handleDragLeave = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+  }, []);
+
+  const handleDrop = useCallback((e: React.DragEvent) => {
+    e.preventDefault();
+    setIsDragging(false);
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      const droppedFile = e.dataTransfer.files[0];
+      if (droppedFile.type.startsWith('video/')) {
+        setFile(droppedFile);
+        setActiveTab('file');
+      }
+    }
+  }, []);
+
 
   // WebSocket for status updates
   useEffect(() => {
@@ -102,15 +152,7 @@ export default function Home() {
     },
   });
 
-  const handleAnalyze = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (url && keyword) {
-      queryClient.removeQueries({ queryKey: ['search-chapters'] });
-      setVideoId(null);
-      setAnalyzedUrl(url);
-      mutate({ url, query: keyword });
-    }
-  };
+
 
   const formatTime = (seconds: number) => {
     const m = Math.floor(seconds / 60);
@@ -262,22 +304,91 @@ export default function Home() {
 
       {/* Input Section */}
       <div className="w-full max-w-2xl bg-slate-800/50 backdrop-blur-sm p-8 rounded-2xl border border-slate-700 shadow-xl mb-12">
-        <form onSubmit={handleAnalyze} className="space-y-6">
-          <div className="space-y-2">
-            <label className="text-sm font-medium text-slate-300 ml-1">Video URL</label>
-            <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
-                <Video className="text-slate-500" size={20} />
+        <div className="flex space-x-4 mb-6">
+          <button
+            onClick={() => setActiveTab('url')}
+            className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
+              activeTab === 'url'
+                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            Video URL
+          </button>
+          <button
+            onClick={() => setActiveTab('file')}
+            className={`flex-1 py-2 text-sm font-medium rounded-lg transition-colors ${
+              activeTab === 'file'
+                ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                : 'text-slate-400 hover:text-slate-200 hover:bg-slate-800'
+            }`}
+          >
+            Upload File
+          </button>
+        </div>
+
+        <div className="space-y-6">
+          {activeTab === 'url' ? (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-300 ml-1">Video URL</label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                  <Video className="text-slate-500" size={20} />
+                </div>
+                <input
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder="https://example.com/video.mp4"
+                  className="w-full pl-12 pr-4 py-3 bg-slate-900/50 border border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-slate-500 transition-all"
+                />
               </div>
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com/video.mp4"
-                className="w-full pl-12 pr-4 py-3 bg-slate-900/50 border border-slate-600 rounded-xl focus:ring-2 focus:ring-blue-500 focus:border-transparent text-white placeholder-slate-500 transition-all"
-              />
             </div>
-          </div>
+          ) : (
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-slate-300 ml-1">Local Video File</label>
+              <div
+                onDragOver={handleDragOver}
+                onDragLeave={handleDragLeave}
+                onDrop={handleDrop}
+                className={`relative border-2 border-dashed rounded-xl p-8 text-center transition-all ${
+                  isDragging
+                    ? 'border-blue-500 bg-blue-500/10'
+                    : 'border-slate-600 bg-slate-900/30 hover:border-slate-500'
+                }`}
+              >
+                <input
+                  type="file"
+                  accept="video/*"
+                  onChange={(e) => {
+                    if (e.target.files?.[0]) setFile(e.target.files[0]);
+                  }}
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer"
+                />
+                {file ? (
+                  <div className="flex items-center justify-center gap-3 text-emerald-400">
+                    <FileVideo size={32} />
+                    <span className="font-medium truncate max-w-[200px]">{file.name}</span>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        setFile(null);
+                      }}
+                      className="p-1 hover:bg-slate-700 rounded-full text-slate-400 hover:text-white transition-colors z-10 relative"
+                    >
+                      <X size={16} />
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2 text-slate-400 pointer-events-none">
+                    <Upload className="mx-auto mb-2" size={32} />
+                    <p className="font-medium">Click to upload or drag and drop</p>
+                    <p className="text-xs text-slate-500">MP4, WebM, MKV (max 2GB)</p>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
 
           <div className="space-y-2">
             <label className="text-sm font-medium text-slate-300 ml-1">Search Query</label>
@@ -296,14 +407,14 @@ export default function Home() {
           </div>
 
           <button
-            type="submit"
-            disabled={isPending || !url || !keyword}
+            onClick={handleAnalyze}
+            disabled={isPending || (!url && activeTab === 'url') || (!file && activeTab === 'file') || !keyword}
             className="w-full bg-blue-600 hover:bg-blue-500 disabled:bg-slate-700 disabled:text-slate-500 disabled:cursor-not-allowed text-white py-4 rounded-xl font-bold text-lg transition-all flex items-center justify-center gap-2 shadow-lg hover:shadow-blue-500/20"
           >
             {isPending ? (
               <>
                 <Loader2 className="animate-spin" size={20} />
-                Starting Analysis...
+                {activeTab === 'file' ? 'Uploading & Analyzing...' : 'Starting Analysis...'}
               </>
             ) : (
               <>
@@ -312,7 +423,7 @@ export default function Home() {
               </>
             )}
           </button>
-        </form>
+        </div>
       </div>
 
       {/* Results Section */}
