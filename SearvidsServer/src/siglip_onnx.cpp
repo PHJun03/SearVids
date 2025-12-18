@@ -14,16 +14,12 @@
 #include <numeric>
 #include <filesystem>
 #include <cstdio>
+#include <opencv2/opencv.hpp>
 
 #ifdef _WIN32
 #define popen _popen
 #define pclose _pclose
 #endif
-
-// stb_image for simple image loading; make sure stb_image.h is available in include paths.
-// Define implementation in this translation unit.
-#define STB_IMAGE_IMPLEMENTATION
-#include "stb_image.h"
 
 using namespace std::string_literals;
 
@@ -143,23 +139,43 @@ SiglipOnnx::SiglipOnnx(const std::string& text_model_path,
             std::cout << "  " << i << ": " << name.get() << "\n";
         }
 
+        // Helper to find 2D output
+        auto find_2d_output = [&](Ort::Session* sess, std::string& out_name) {
+            size_t count = sess->GetOutputCount();
+            for (size_t i = 0; i < count; ++i) {
+                auto type_info = sess->GetOutputTypeInfo(i);
+                auto tensor_info = type_info.GetTensorTypeAndShapeInfo();
+                auto shape = tensor_info.GetShape();
+                
+                // Check if 2D (batch, dim)
+                // Note: shape might have -1 for dynamic dims
+                if (shape.size() == 2) {
+                    auto name_ptr = sess->GetOutputNameAllocated(i, allocator);
+                    out_name = name_ptr.get();
+                    std::cout << "[siglip_onnx] Selected 2D output for " << (sess == text_session_.get() ? "text" : "vision") 
+                              << ": " << out_name << " (index " << i << ")\n";
+                    return;
+                }
+            }
+            // Fallback to 0 if no 2D found
+            if (count > 0) {
+                auto name_ptr = sess->GetOutputNameAllocated(0, allocator);
+                out_name = name_ptr.get();
+                std::cout << "[siglip_onnx] Warning: No 2D output found. Using index 0: " << out_name << "\n";
+            }
+        };
+
         if (text_session_->GetInputCount() > 0) {
             auto name_ptr = text_session_->GetInputNameAllocated(0, allocator);
             text_input_name_ = name_ptr.get();
         }
-        if (text_session_->GetOutputCount() > 0) {
-            auto name_ptr = text_session_->GetOutputNameAllocated(0, allocator);
-            text_output_name_ = name_ptr.get();
-        }
+        find_2d_output(text_session_.get(), text_output_name_);
 
         if (vision_session_->GetInputCount() > 0) {
             auto name_ptr = vision_session_->GetInputNameAllocated(0, allocator);
             vision_input_name_ = name_ptr.get();
         }
-        if (vision_session_->GetOutputCount() > 0) {
-            auto name_ptr = vision_session_->GetOutputNameAllocated(0, allocator);
-            vision_output_name_ = name_ptr.get();
-        }
+        find_2d_output(vision_session_.get(), vision_output_name_);
 
         std::cout << "[siglip_onnx] Loaded text model: " << text_model_path << "\n";
         std::cout << "[siglip_onnx] Loaded vision model: " << vision_model_path << "\n";
@@ -404,41 +420,20 @@ std::vector<int64_t> SiglipOnnx::pythonTokenize(const std::string& text) {
 }
 
 /**
- * Load an image using stb_image and preprocess:
- *  - force 3 channels
- *  - nearest-neighbor resize to image_size_
+ * Load an image using OpenCV and preprocess:
+ *  - force 3 channels (RGB)
+ *  - resize to image_size_ (bilinear/area)
  *  - normalize (mean/std) and produce NCHW float tensor
  */
 std::vector<float> SiglipOnnx::loadAndPreprocessImage(const std::string& path) {
-    int w, h, c;
-    unsigned char* img = stbi_load(path.c_str(), &w, &h, &c, 3);
-    if (!img) {
+    cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
+    if (img.empty()) {
         throw std::runtime_error("Failed to load image: " + path);
     }
+    // OpenCV loads as BGR, convert to RGB
+    cv::cvtColor(img, img, cv::COLOR_BGR2RGB);
 
-    // allocate resized buffer (CHW)
-    std::vector<float> resized(3 * image_size_ * image_size_);
-
-    // simple nearest-neighbor resize and normalization
-    for (int y = 0; y < image_size_; ++y) {
-        int src_y = (y * h) / image_size_;
-        if (src_y >= h) src_y = h - 1;
-        for (int x = 0; x < image_size_; ++x) {
-            int src_x = (x * w) / image_size_;
-            if (src_x >= w) src_x = w - 1;
-            for (int ch = 0; ch < 3; ++ch) {
-                int src_idx = (src_y * w + src_x) * 3 + ch;
-                float v = static_cast<float>(img[src_idx]) / 255.0f;
-                v = (v - mean_[ch]) / std_[ch];
-                // NCHW ordering: channel-major
-                size_t dst_idx = static_cast<size_t>(ch) * image_size_ * image_size_ + y * image_size_ + x;
-                resized[dst_idx] = v;
-            }
-        }
-    }
-
-    stbi_image_free(img);
-    return resized;
+    return preprocessRGBBuffer(std::vector<uint8_t>(img.data, img.data + (img.total() * img.elemSize())), img.cols, img.rows);
 }
 
 /**
@@ -448,69 +443,42 @@ std::vector<float> SiglipOnnx::loadAndPreprocessImage(const std::string& path) {
  */
 std::vector<float> SiglipOnnx::preprocessRGBBuffer(const std::vector<uint8_t>& rgb_data,
                                                   int width,
-                                                  int height) {
-    // Validate input size
-    size_t expected_size = static_cast<size_t>(width) * height * 3;
-    if (rgb_data.size() != expected_size) {
-        throw std::runtime_error("RGB buffer size mismatch: expected " + 
-                                std::to_string(expected_size) + 
-                                ", got " + std::to_string(rgb_data.size()));
+                                                  int height)
+{
+    if (rgb_data.empty() || width <= 0 || height <= 0) {
+        throw std::runtime_error("Invalid image data");
     }
 
-    // Allocate output tensor (NCHW format)
+    // Wrap buffer in cv::Mat (no copy)
+    cv::Mat src(height, width, CV_8UC3, const_cast<uint8_t*>(rgb_data.data()));
+    
+    cv::Mat resized;
+    // Use INTER_AREA for downscaling (e.g. 4K -> 224), INTER_LINEAR for upscaling
+    int interpolation = (width > image_size_ && height > image_size_) ? cv::INTER_AREA : cv::INTER_LINEAR;
+    cv::resize(src, resized, cv::Size(image_size_, image_size_), 0, 0, interpolation);
+
+    // Normalize and convert to NCHW
     std::vector<float> output(3 * image_size_ * image_size_);
-
-    // Bilinear resize + normalize
-    float scale_x = (float)width / image_size_;
-    float scale_y = (float)height / image_size_;
-
+    
+    // Iterate over pixels
+    // Optimized loop could use split() and forEach, but this is clear enough
     for (int y = 0; y < image_size_; ++y) {
-        float src_y = (y + 0.5f) * scale_y - 0.5f;
-        int y0 = (int)std::floor(src_y);
-        int y1 = y0 + 1;
-        float dy = src_y - y0;
-
-        // Clamp coordinates
-        y0 = std::max(0, std::min(y0, height - 1));
-        y1 = std::max(0, std::min(y1, height - 1));
-
         for (int x = 0; x < image_size_; ++x) {
-            float src_x = (x + 0.5f) * scale_x - 0.5f;
-            int x0 = (int)std::floor(src_x);
-            int x1 = x0 + 1;
-            float dx = src_x - x0;
-
-            // Clamp coordinates
-            x0 = std::max(0, std::min(x0, width - 1));
-            x1 = std::max(0, std::min(x1, width - 1));
-
-            // Process each channel (R, G, B)
-            for (int ch = 0; ch < 3; ++ch) {
-                // Get 4 neighbors
-                float c00 = (float)rgb_data[(y0 * width + x0) * 3 + ch];
-                float c01 = (float)rgb_data[(y0 * width + x1) * 3 + ch];
-                float c10 = (float)rgb_data[(y1 * width + x0) * 3 + ch];
-                float c11 = (float)rgb_data[(y1 * width + x1) * 3 + ch];
-
-                // Interpolate
-                float top = c00 * (1.0f - dx) + c01 * dx;
-                float bottom = c10 * (1.0f - dx) + c11 * dx;
-                float pixel_value = top * (1.0f - dy) + bottom * dy;
-
-                // Normalize: [0, 255] -> [0, 1] -> standardize
-                pixel_value /= 255.0f;
-                float normalized = (pixel_value - mean_[ch]) / std_[ch];
-
-                // Output: NCHW format (channel-major)
-                size_t dst_idx = static_cast<size_t>(ch) * image_size_ * image_size_ + 
-                                 y * image_size_ + x;
-                output[dst_idx] = normalized;
+            cv::Vec3b pixel = resized.at<cv::Vec3b>(y, x);
+            for (int c = 0; c < 3; ++c) {
+                // pixel[c] is R, G, B (since input was RGB)
+                float v = static_cast<float>(pixel[c]) / 255.0f;
+                v = (v - mean_[c]) / std_[c];
+                
+                // NCHW: [channel][y][x]
+                output[c * image_size_ * image_size_ + y * image_size_ + x] = v;
             }
         }
     }
-
+    
     return output;
 }
+
 
 /**
  * Encode image from RGB buffer (wrapper for preprocessRGBBuffer + runVisionSession)

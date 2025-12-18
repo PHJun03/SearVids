@@ -10,22 +10,35 @@
 #include <vector>
 #include <string>
 #include <memory>
+#include <algorithm>
+#include <iostream>
 
 namespace hnsw_index {
 
-class VideoIdFilter : public hnswlib::BaseFilterFunctor {
+class SearchFilter : public hnswlib::BaseFilterFunctor {
 public:
-    VideoIdFilter(const std::vector<TimelineEntry>& entries, const std::string& video_id)
-        : entries_(entries), video_id_(video_id) {}
+    SearchFilter(const std::vector<TimelineEntry>& entries, const std::string& video_id, const std::string& type)
+        : entries_(entries), video_id_(video_id), type_(type) {}
 
     bool operator()(hnswlib::labeltype label) override {
         if (label >= entries_.size()) return false;
-        return entries_[label].video_id == video_id_;
+        const auto& entry = entries_[label];
+        
+        if (!video_id_.empty() && entry.video_id != video_id_) return false;
+        
+        if (!type_.empty()) {
+            bool is_visual = (entry.caption.empty() || entry.caption == "[Visual]" || entry.caption == "visual_frame");
+            if (type_ == "visual" && !is_visual) return false;
+            if (type_ == "audio" && is_visual) return false;
+        }
+        
+        return true;
     }
 
 private:
     const std::vector<TimelineEntry>& entries_;
     std::string video_id_;
+    std::string type_;
 };
 
 class HnswIndexImpl {
@@ -50,26 +63,24 @@ public:
         return id;
     }
 
-    std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5, const std::string& video_id_filter = "") {
+    std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5, const std::string& video_id_filter = "", const std::string& type_filter = "") {
         std::lock_guard<std::mutex> lock(mutex_);
         if (entries_.empty()) return {};
 
         size_t k = std::min(topk, entries_.size());
         
         std::priority_queue<std::pair<float, hnswlib::labeltype>> result;
-        if (!video_id_filter.empty()) {
-            VideoIdFilter filter(entries_, video_id_filter);
+        if (!video_id_filter.empty() || !type_filter.empty()) {
+            SearchFilter filter(entries_, video_id_filter, type_filter);
             try {
                 result = index_->searchKnn(query.data(), k, &filter);
             } catch (...) {
-                // Fallback if not enough elements match filter?
-                // hnswlib throws if k > number of elements in index? No.
-                // It might return fewer results.
+                // Ignore errors
             }
         } else {
             result = index_->searchKnn(query.data(), k);
         }
-
+        
         std::vector<TimelineEntry> out;
         while (!result.empty()) {
             int id = result.top().second;
@@ -129,9 +140,9 @@ void remove_video(const std::string& video_id) {
     }
 }
 
-std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk, const std::string& video_id_filter) {
+std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk, const std::string& video_id_filter, const std::string& type_filter) {
     if (!g_index) throw std::runtime_error("Index not created");
-    return g_index->search(query, topk, video_id_filter);
+    return g_index->search(query, topk, video_id_filter, type_filter);
 }
 
 size_t size() {

@@ -31,6 +31,8 @@ find_library(ONNXRUNTIME_LIB
 
 find_package(Threads REQUIRED)
 
+find_package(OpenCV REQUIRED)
+
 add_library(siglip_onnx STATIC
     src/siglip_onnx.cpp
     src/siglip_onnx.h
@@ -41,10 +43,12 @@ if(USE_TENSORRT)
 endif()
 
 target_include_directories(siglip_onnx PUBLIC ${ONNXRUNTIME_INCLUDE_DIR})
+
 target_link_libraries(siglip_onnx PUBLIC
     ${ONNXRUNTIME_LIB}
     Threads::Threads
     ${CMAKE_DL_LIBS}
+    ${OpenCV_LIBS}
 )
 
 # ========== Main Executable ==========

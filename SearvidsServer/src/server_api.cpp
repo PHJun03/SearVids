@@ -228,7 +228,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                     [&frame_queue](const ffmpeg_decoder::FrameData& frame) {
                                         frame_queue.push({frame, false});
                                     },
-                                    2.0, 0, 0, 0, 224, 224, ffmpeg_decoder::FrameExtractionMethod::SCENE_DETECT
+                                    2.0, 0, 0, 0, 0, 0, ffmpeg_decoder::FrameExtractionMethod::SCENE_DETECT
                                 );
                                 frame_queue.push({{}, true});
                                 if (consumer_thread.joinable()) consumer_thread.join();
@@ -650,7 +650,8 @@ static std::vector<SearchResult> filter_results(const std::vector<hnsw_index::Ti
         // 2. Threshold
         if (!keep) {
             // Lower thresholds for SigLIP
-            float threshold = is_visual ? 0.02f : 0.15f;
+            // 0.02 was too high for some queries (e.g. "green snake" -> 0.013)
+            float threshold = is_visual ? 0.01f : 0.15f;
             if (r.similarity >= threshold) {
                 keep = true;
             }
@@ -1038,7 +1039,27 @@ void setup_routes(crow::SimpleApp& app) {
                 emb = sreq.embedding;
             }
 
-            auto hnsw_results = hnsw_index::search(emb, sreq.topk, sreq.video_id);
+            std::vector<hnsw_index::TimelineEntry> hnsw_results;
+            
+            if (sreq.search_type == "visual") {
+                hnsw_results = hnsw_index::search(emb, sreq.topk, sreq.video_id, "visual");
+            } else if (sreq.search_type == "audio") {
+                hnsw_results = hnsw_index::search(emb, sreq.topk, sreq.video_id, "audio");
+            } else {
+                // Both: search separately to ensure we get results from both modalities
+                // This prevents audio results from drowning out visual results if their score distributions differ
+                auto visual_results = hnsw_index::search(emb, sreq.topk, sreq.video_id, "visual");
+                auto audio_results = hnsw_index::search(emb, sreq.topk, sreq.video_id, "audio");
+                
+                hnsw_results.insert(hnsw_results.end(), visual_results.begin(), visual_results.end());
+                hnsw_results.insert(hnsw_results.end(), audio_results.begin(), audio_results.end());
+                
+                // Sort by similarity descending
+                std::sort(hnsw_results.begin(), hnsw_results.end(), [](const auto& a, const auto& b) {
+                    return a.similarity > b.similarity;
+                });
+            }
+
             auto api_results = filter_results(hnsw_results, sreq.query);
             return create_search_response(api_results);
         } catch (const std::exception& e) {
@@ -1127,6 +1148,24 @@ void setup_routes(crow::SimpleApp& app) {
     // GET /api/health
     CROW_ROUTE(app, "/api/health").methods("GET"_method)([] {
         return crow::response(200, "OK");
+    });
+
+    // DEBUG: Text Similarity
+    CROW_ROUTE(app, "/api/debug/text_sim").methods(crow::HTTPMethod::POST)
+    ([](const crow::request& req) {
+        auto j = nlohmann::json::parse(req.body);
+        std::string t1 = j["text1"];
+        std::string t2 = j["text2"];
+        
+        auto& siglip = get_siglip();
+        auto e1 = siglip.encodeText(t1);
+        auto e2 = siglip.encodeText(t2);
+        
+        float sim = siglip_onnx::SiglipOnnx::cosineSimilarity(e1, e2);
+        
+        nlohmann::json resp;
+        resp["similarity"] = sim;
+        return json_ok(resp);
     });
 
     // CORS preflight

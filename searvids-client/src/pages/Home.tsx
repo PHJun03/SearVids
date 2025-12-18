@@ -248,9 +248,12 @@ export default function Home() {
     if (searchError) return <Error message="Failed to load chapters." />;
     
     if (!mergedResults.length) {
-      if (isSearching) return null;
-      if (analyzeStatus?.status === 'pending' || !analyzeStatus) return null;
-      return <p className="text-slate-500">No results found yet.</p>;
+      // Only show "No results" if analysis is fully done and we still found nothing
+      if (analyzeStatus?.status === 'done') {
+        return <p className="text-slate-500">No matching moments found.</p>;
+      }
+      // Otherwise (analyzing, pending, etc.), show nothing to avoid flickering
+      return null;
     }
 
     return (

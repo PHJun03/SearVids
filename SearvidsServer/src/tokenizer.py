@@ -29,10 +29,10 @@ def main():
         tokenizer = AutoTokenizer.from_pretrained(model_path)
         
         # Tokenize
-        # padding="max_length" ensures we get exactly max_length tokens
-        # truncation=True ensures we don't exceed max_length
-        # SigLIP uses 64 max length (CLIP used 77)
-        tokens = tokenizer(text, padding="max_length", max_length=64, truncation=True)
+        # Do not pad to max_length. Let the C++ side handle the dynamic length.
+        # This avoids polluting the embedding with padding tokens if the model 
+        # doesn't accept an attention_mask (which seems to be the case here).
+        tokens = tokenizer(text, truncation=True, max_length=64)
         
         # Output space-separated token IDs
         ids = tokens['input_ids']
