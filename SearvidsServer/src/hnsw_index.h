@@ -24,4 +24,8 @@ void remove_video(const std::string& video_id);
 std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk = 5, const std::string& video_id_filter = "", const std::string& type_filter = "");
 size_t size();
 
+// Save/Load index and metadata
+void save(const std::string& path_prefix);
+void load(const std::string& path_prefix);
+
 } // namespace hnsw_index

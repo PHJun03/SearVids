@@ -12,6 +12,8 @@
 #include <memory>
 #include <algorithm>
 #include <iostream>
+#include <fstream>
+#include <nlohmann/json.hpp>
 
 namespace hnsw_index {
 
@@ -113,6 +115,75 @@ public:
         }
     }
 
+    void save(const std::string& path_prefix) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        // 1. Save HNSW index
+        index_->saveIndex(path_prefix + ".index");
+
+        // 2. Save Metadata (JSON)
+        nlohmann::json j;
+        j["dim"] = dim_;
+        j["space"] = space_;
+        j["next_id"] = next_id_;
+        
+        std::vector<nlohmann::json> entries_json;
+        for (const auto& e : entries_) {
+            entries_json.push_back({
+                {"id", e.id},
+                {"video_id", e.video_id},
+                {"start", e.start_time},
+                {"end", e.end_time},
+                {"caption", e.caption}
+            });
+        }
+        j["entries"] = entries_json;
+
+        std::ofstream o(path_prefix + ".meta");
+        o << j.dump(4);
+    }
+
+    void load(const std::string& path_prefix) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        
+        // 1. Load Metadata
+        std::ifstream i(path_prefix + ".meta");
+        if (!i.is_open()) throw std::runtime_error("Meta file not found: " + path_prefix + ".meta");
+        
+        nlohmann::json j;
+        i >> j;
+
+        dim_ = j["dim"];
+        space_ = j["space"];
+        next_id_ = j["next_id"];
+
+        entries_.clear();
+        for (const auto& item : j["entries"]) {
+            entries_.push_back({
+                item["id"],
+                item["video_id"],
+                item["start"],
+                item["end"],
+                item["caption"],
+                0.0f // similarity placeholder
+            });
+        }
+
+        // 2. Load HNSW index
+        // Re-create index object from file
+        if (space_ == "cosine") {
+            space_l2_ = std::make_unique<hnswlib::InnerProductSpace>(dim_);
+        } else {
+            space_l2_ = std::make_unique<hnswlib::L2Space>(dim_);
+        }
+        
+        try {
+            index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(space_l2_.get(), path_prefix + ".index");
+        } catch (...) {
+            // Fallback if index file is corrupted or incompatible, create new
+             index_ = std::make_unique<hnswlib::HierarchicalNSW<float>>(space_l2_.get(), 10000);
+        }
+    }
+
 private:
     int dim_;
     std::string space_;
@@ -148,6 +219,19 @@ std::vector<TimelineEntry> search(const std::vector<float>& query, size_t topk, 
 size_t size() {
     if (!g_index) return 0;
     return g_index->size();
+}
+
+void save(const std::string& path_prefix) {
+    if (!g_index) throw std::runtime_error("Index not created");
+    g_index->save(path_prefix);
+}
+
+void load(const std::string& path_prefix) {
+    if (!g_index) {
+        // Create default if not exists, though load will overwrite dims
+        create(768, "cosine"); 
+    }
+    g_index->load(path_prefix);
 }
 
 } // namespace hnsw_index

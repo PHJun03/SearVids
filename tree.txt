@@ -1,0 +1,22 @@
+Searvids/
+├───SearvidsServer/
+│   ├───src/
+│   │   ├───server_main.cpp
+│   │   ├───server_api.h/.cpp
+│   │   ├───downloader.h/.cpp
+│   │   ├───ffmpeg_decoder.h/.cpp
+│   │   ├───whisper_wrapper.h/.cpp
+│   │   ├───whisper_ct2.py
+│   │   ├───siglip_onnx.h/.cpp
+│   │   ├───tokenizer.py
+│   │   ├───hnsw_index.h/.cpp
+│   │   └───utils.h/.cpp
+│   ├───third_party/
+│   │   ├───onnxruntime/
+│   │   └───hnswlib/
+│   └───CMakeLists.txt
+├───searvids-client/
+└───models/
+    ├─── faster_whisper/
+    └─── siglip_text/vision
+

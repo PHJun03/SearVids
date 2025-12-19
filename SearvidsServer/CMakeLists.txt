@@ -32,6 +32,8 @@ find_library(ONNXRUNTIME_LIB
 find_package(Threads REQUIRED)
 
 find_package(OpenCV REQUIRED)
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(LIBPQXX REQUIRED libpqxx)
 
 add_library(siglip_onnx STATIC
     src/siglip_onnx.cpp
@@ -142,7 +144,9 @@ target_link_libraries(server_api PRIVATE
     whisper_wrapper
     nlohmann_json::nlohmann_json
     ${OpenCV_LIBS}
+    ${LIBPQXX_LIBRARIES}
 )
+target_include_directories(server_api PRIVATE ${LIBPQXX_INCLUDE_DIRS})
 
 
 # ========== Main Linking ==========

@@ -14,10 +14,13 @@ int main(int argc, char** argv) {
     // SigLIP uses 768 dimensions (CLIP used 512)
     hnsw_index::create(768, "cosine");
 
-    // 2. Create Crow app
+    // 2. Initialize Database
+    server_api::init_db();
+
+    // 3. Create Crow app
     crow::SimpleApp app;
 
-    // 3. Register API routes
+    // 4. Register API routes
     server_api::setup_routes(app);
 
     // 4. Server start log

@@ -25,12 +25,136 @@
 #include <algorithm>
 #include <cctype>
 #include <future>
+#include <pqxx/pqxx>
 
 namespace server_api {
 
 std::mutex g_sessions_mtx;
 std::unordered_map<std::string, std::shared_ptr<VideoSession>> g_sessions;
 whisper_wrapper::WhisperWrapper g_whisper;
+
+// Database connection string
+const std::string DB_CONN_STR = "postgresql://searvids_user:searvids_pass@db:5432/searvids_db";
+
+// Helper to check DB connection
+bool check_db_connection() {
+    try {
+        pqxx::connection C(DB_CONN_STR);
+        if (C.is_open()) {
+            return true;
+        } else {
+            return false;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "DB Connection Error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+void init_db() {
+    try {
+        pqxx::connection C(DB_CONN_STR);
+        if (C.is_open()) {
+            pqxx::work W(C);
+            W.exec(R"(
+                CREATE TABLE IF NOT EXISTS videos (
+                    video_id TEXT PRIMARY KEY,
+                    url TEXT UNIQUE NOT NULL,
+                    platform TEXT,
+                    title TEXT,
+                    index_path TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    access_count INT DEFAULT 1,
+                    last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            )");
+            
+            // Migration for existing tables
+            try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 1;"); } catch (...) {}
+            try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"); } catch (...) {}
+
+            // Access Logs for Monthly Stats
+            W.exec(R"(
+                CREATE TABLE IF NOT EXISTS access_logs (
+                    id SERIAL PRIMARY KEY,
+                    video_id TEXT NOT NULL,
+                    accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+                CREATE INDEX IF NOT EXISTS idx_access_logs_video_id ON access_logs(video_id);
+                CREATE INDEX IF NOT EXISTS idx_access_logs_date ON access_logs(accessed_at);
+            )");
+
+            W.commit();
+            std::cout << "Database initialized successfully." << std::endl;
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "DB Init Error: " << e.what() << std::endl;
+    }
+}
+
+void update_video_stats(const std::string& video_id) {
+    try {
+        pqxx::connection C(DB_CONN_STR);
+        if (C.is_open()) {
+            pqxx::work W(C);
+            // Update total count
+            W.exec_params(R"(
+                UPDATE videos 
+                SET access_count = access_count + 1, 
+                    last_accessed_at = CURRENT_TIMESTAMP 
+                WHERE video_id = $1
+            )", video_id);
+            
+            // Insert log entry
+            W.exec_params("INSERT INTO access_logs (video_id) VALUES ($1)", video_id);
+            
+            W.commit();
+        }
+    } catch (...) {}
+}
+
+void enforce_disk_cache_policy() {
+    const int MAX_CACHE_SIZE = 3; // Keep only top 3 for testing
+    try {
+        pqxx::connection C(DB_CONN_STR);
+        if (C.is_open()) {
+            pqxx::work W(C);
+            
+            // 1. Cleanup logs older than 30 days
+            W.exec("DELETE FROM access_logs WHERE accessed_at < NOW() - INTERVAL '30 days'");
+
+            // 2. Find videos to evict based on MONTHLY popularity (count in access_logs)
+            // We select videos that have index_path, order by their log count DESC, and skip top N.
+            pqxx::result R = W.exec_params(R"(
+                SELECT v.video_id, v.index_path, COUNT(a.id) as monthly_count
+                FROM videos v
+                LEFT JOIN access_logs a ON v.video_id = a.video_id
+                WHERE v.index_path IS NOT NULL
+                GROUP BY v.video_id
+                ORDER BY monthly_count DESC, v.last_accessed_at DESC 
+                OFFSET $1
+            )", MAX_CACHE_SIZE);
+
+            for (const auto& row : R) {
+                std::string vid = row[0].as<std::string>();
+                std::string path = row[1].as<std::string>();
+                
+                // Delete files
+                try {
+                    if (std::filesystem::exists(path + ".index")) std::filesystem::remove(path + ".index");
+                    if (std::filesystem::exists(path + ".meta")) std::filesystem::remove(path + ".meta");
+                    std::cout << "[Cache Eviction] Removed " << vid << " (Low Monthly Rank)" << std::endl;
+                } catch (...) {}
+
+                // Update DB
+                W.exec_params("UPDATE videos SET index_path = NULL WHERE video_id = $1", vid);
+            }
+            W.commit();
+        }
+    } catch (const std::exception& e) {
+        std::cerr << "Cache Policy Error: " << e.what() << std::endl;
+    }
+}
 
 // WebSocket connections: video_id -> list of connections
 struct WsConnection {
@@ -297,7 +421,7 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                         visual_future.wait();
                         audio_future.wait();
                         
-                        // std::filesystem::remove(chunk_path); // Keep chunks for thumbnails
+                        std::filesystem::remove(chunk_path); 
                     } catch (const std::exception& e) {
                         std::cerr << "Error analyzing chunk " << current_start << ": " << e.what() << std::endl;
                     }
@@ -577,6 +701,42 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                   << duration << " seconds (audio_segments: " << sess.indexed_audio_segments
                   << ", visual_frames: " << sess.indexed_visual_frames << ")" << std::endl;
 
+        // --- DB SAVE START ---
+        try {
+            // Ensure data directory exists
+            std::filesystem::create_directories("data");
+            std::string index_path = "data/" + sess.video_id;
+            
+            // Save HNSW index to disk
+            hnsw_index::save(index_path);
+            
+            pqxx::connection C(DB_CONN_STR);
+            if (C.is_open()) {
+                pqxx::work W(C);
+                // Upsert (Insert or Update)
+                W.exec_params(R"(
+                    INSERT INTO videos (video_id, url, index_path) 
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (video_id) DO UPDATE SET index_path = EXCLUDED.index_path;
+                )", sess.video_id, sess.source_url, index_path);
+                W.commit();
+                std::cout << "[" << sess.video_id << "] Saved to DB cache." << std::endl;
+                
+                // Update stats and enforce policy
+                update_video_stats(sess.video_id);
+                enforce_disk_cache_policy();
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "DB Save Error: " << e.what() << std::endl;
+        }
+        // --- DB SAVE END ---
+
+        // Cleanup downloaded video file
+        if (!sess.local_path.empty() && sess.source_url.find("http") == 0 && std::filesystem::exists(sess.local_path)) {
+             std::filesystem::remove(sess.local_path);
+             std::cout << "[" << sess.video_id << "] Removed temporary video file." << std::endl;
+        }
+
     } catch (const std::exception& e) {
         sess.error = e.what();
         sess.current_stage = "failed";
@@ -586,6 +746,11 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
         
         std::cerr << "[" << sess.video_id << "] Analysis failed: " 
                   << e.what() << std::endl;
+
+        // Cleanup downloaded video file on error
+        if (!sess.local_path.empty() && sess.source_url.find("http") == 0 && std::filesystem::exists(sess.local_path)) {
+             std::filesystem::remove(sess.local_path);
+        }
     }
     
     sess.analyzing = false;
@@ -713,6 +878,47 @@ void setup_routes(crow::SimpleApp& app) {
         if (url.empty()) return json_err(400, "url is required");
 
         auto vid = make_video_id(url);
+
+        // --- DB CACHE CHECK START ---
+        try {
+            pqxx::connection C(DB_CONN_STR);
+            if (C.is_open()) {
+                pqxx::work W(C);
+                pqxx::result R = W.exec_params("SELECT index_path FROM videos WHERE url = $1", url);
+                if (!R.empty()) {
+                    std::string index_path = R[0][0].as<std::string>();
+                    if (std::filesystem::exists(index_path + ".index")) {
+                        std::cout << "[Cache Hit] Loading index for " << vid << std::endl;
+                        hnsw_index::load(index_path);
+                        
+                        auto sess = std::make_shared<VideoSession>();
+                        sess->video_id = vid;
+                        sess->source_url = url;
+                        sess->done = true;
+                        sess->progress_percent = 100;
+                        sess->current_stage = "completed (cached)";
+                        
+                        std::lock_guard<std::mutex> lk(g_sessions_mtx);
+                        g_sessions[vid] = sess;
+                        
+                        // Update stats and enforce policy
+                        std::thread([vid](){
+                            update_video_stats(vid);
+                            enforce_disk_cache_policy();
+                        }).detach();
+
+                        nlohmann::json resp = nlohmann::json::object();
+                        resp["status"] = "cached";
+                        resp["video_id"] = vid;
+                        return json_ok(resp, 200);
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "DB Cache Check Error: " << e.what() << std::endl;
+        }
+        // --- DB CACHE CHECK END ---
+
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
             
@@ -761,6 +967,48 @@ void setup_routes(crow::SimpleApp& app) {
         if (url.empty()) return json_err(400, "url is required");
 
         auto vid = make_video_id(url);
+
+        // --- DB CACHE CHECK START ---
+        try {
+            pqxx::connection C(DB_CONN_STR);
+            if (C.is_open()) {
+                pqxx::work W(C);
+                pqxx::result R = W.exec_params("SELECT index_path FROM videos WHERE url = $1", url);
+                if (!R.empty()) {
+                    std::string index_path = R[0][0].as<std::string>();
+                    if (std::filesystem::exists(index_path + ".index")) {
+                        std::cout << "[Cache Hit] Loading index for " << vid << std::endl;
+                        hnsw_index::load(index_path);
+                        
+                        // Create a fake completed session for status checks
+                        auto sess = std::make_shared<VideoSession>();
+                        sess->video_id = vid;
+                        sess->source_url = url;
+                        sess->done = true;
+                        sess->progress_percent = 100;
+                        sess->current_stage = "completed (cached)";
+                        
+                        std::lock_guard<std::mutex> lk(g_sessions_mtx);
+                        g_sessions[vid] = sess;
+                        
+                        // Update stats and enforce policy
+                        std::thread([vid](){
+                            update_video_stats(vid);
+                            enforce_disk_cache_policy();
+                        }).detach();
+
+                        nlohmann::json resp = nlohmann::json::object();
+                        resp["status"] = "cached";
+                        resp["video_id"] = vid;
+                        return json_ok(resp, 200);
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "DB Cache Check Error: " << e.what() << std::endl;
+        }
+        // --- DB CACHE CHECK END ---
+
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
 
@@ -801,6 +1049,47 @@ void setup_routes(crow::SimpleApp& app) {
         std::string url = body.value("url", "");
         if (url.empty()) return json_err(400, "url is required");
         auto vid = make_video_id(url);
+
+        // --- DB CACHE CHECK START ---
+        try {
+            pqxx::connection C(DB_CONN_STR);
+            if (C.is_open()) {
+                pqxx::work W(C);
+                pqxx::result R = W.exec_params("SELECT index_path FROM videos WHERE url = $1", url);
+                if (!R.empty()) {
+                    std::string index_path = R[0][0].as<std::string>();
+                    if (std::filesystem::exists(index_path + ".index")) {
+                        std::cout << "[Cache Hit] Loading index for " << vid << std::endl;
+                        hnsw_index::load(index_path);
+                        
+                        auto sess = std::make_shared<VideoSession>();
+                        sess->video_id = vid;
+                        sess->source_url = url;
+                        sess->done = true;
+                        sess->progress_percent = 100;
+                        sess->current_stage = "completed (cached)";
+                        
+                        std::lock_guard<std::mutex> lk(g_sessions_mtx);
+                        g_sessions[vid] = sess;
+                        
+                        // Update stats and enforce policy
+                        std::thread([vid](){
+                            update_video_stats(vid);
+                            enforce_disk_cache_policy();
+                        }).detach();
+
+                        nlohmann::json resp = nlohmann::json::object();
+                        resp["status"] = "cached";
+                        resp["video_id"] = vid;
+                        return json_ok(resp, 200);
+                    }
+                }
+            }
+        } catch (const std::exception& e) {
+            std::cerr << "DB Cache Check Error: " << e.what() << std::endl;
+        }
+        // --- DB CACHE CHECK END ---
+
         {
             std::lock_guard<std::mutex> lk(g_sessions_mtx);
 
@@ -1147,7 +1436,11 @@ void setup_routes(crow::SimpleApp& app) {
 
     // GET /api/health
     CROW_ROUTE(app, "/api/health").methods("GET"_method)([] {
-        return crow::response(200, "OK");
+        bool db_ok = check_db_connection();
+        nlohmann::json j;
+        j["status"] = "OK";
+        j["db_connected"] = db_ok;
+        return json_ok(j);
     });
 
     // DEBUG: Text Similarity

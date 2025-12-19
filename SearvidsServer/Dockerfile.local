@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencv-dev \
     libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev \
     libcurl4-openssl-dev tzdata ffmpeg \
-    nlohmann-json3-dev wget \
+    nlohmann-json3-dev wget libpqxx-dev \
     && pip install --no-cache-dir -U yt-dlp \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -55,7 +55,7 @@ ENV LC_ALL=C.UTF-8
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 python3-pip \
     libswscale5 libswresample3 libavcodec58 libavformat58 libavutil56 libavfilter7 \
-    libcurl4 libopencv-core4.5d libopencv-imgcodecs4.5d libopencv-imgproc4.5d ffmpeg \
+    libcurl4 libopencv-core4.5d libopencv-imgcodecs4.5d libopencv-imgproc4.5d ffmpeg libpqxx-6.4 \
     && pip install --no-cache-dir -U yt-dlp faster-whisper sentencepiece transformers \
     && rm -rf /var/lib/apt/lists/*
 

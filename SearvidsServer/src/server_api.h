@@ -80,6 +80,9 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess);
 // Initialize API routes
 void setup_routes(crow::SimpleApp& app);
 
+// Initialize Database
+void init_db();
+
 // Parse search request from JSON (supports "query" and "query_text")
 SearchRequest parse_search_request(const std::string& body);
 
