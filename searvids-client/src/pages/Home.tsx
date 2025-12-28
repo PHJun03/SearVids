@@ -298,7 +298,7 @@ export default function Home() {
       {/* Hero Section */}
       <div className="text-center mb-12 max-w-2xl">
         <h1 className="text-5xl md:text-6xl font-extrabold mb-6 tracking-tight bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-emerald-400">
-          Searvids
+          SearVids
         </h1>
         <p className="text-xl text-slate-400 font-light">
           Analyze videos and search for specific moments using AI.

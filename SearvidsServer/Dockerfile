@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libopencv-dev \
     libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libavfilter-dev \
     libcurl4-openssl-dev tzdata ffmpeg \
-    nlohmann-json3-dev wget \
+    nlohmann-json3-dev wget libpqxx-dev \
     && pip install --no-cache-dir -U yt-dlp \
     && update-ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -25,6 +25,14 @@ RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VE
  && mkdir -p /app/third_party/onnxruntime \
  && cp -r onnxruntime-linux-x64-gpu-${ORT_VERSION}/* /app/third_party/onnxruntime/ \
  && rm -rf onnxruntime-linux-x64-gpu-${ORT_VERSION}*
+
+# Install Crow (C++ Microframework for Web)
+RUN git clone --branch v1.2.0 https://github.com/CrowCpp/Crow.git /tmp/crow \
+    && cd /tmp/crow \
+    && mkdir build && cd build \
+    && cmake .. -DCROW_BUILD_EXAMPLES=OFF -DCROW_BUILD_TESTS=OFF \
+    && make install \
+    && rm -rf /tmp/crow
 
 # Copy source code
 WORKDIR /app
@@ -46,8 +54,8 @@ ENV HF_HOME=/app/models/hf_cache
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 python3-pip \
     libswscale5 libswresample3 libavcodec58 libavformat58 libavutil56 libavfilter7 \
-    libcurl4 libopencv-core4.5d libopencv-imgcodecs4.5d libopencv-imgproc4.5d ffmpeg \
-    && pip install --no-cache-dir -U yt-dlp transformers faster-whisper \
+    libcurl4 libopencv-core4.5d libopencv-imgcodecs4.5d libopencv-imgproc4.5d ffmpeg libpqxx-6.4 \
+    && pip install --no-cache-dir -U yt-dlp transformers faster-whisper sentencepiece \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

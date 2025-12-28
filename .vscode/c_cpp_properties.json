@@ -4,9 +4,6 @@
             "name": "Win64-MSVC",
             "includePath": [
                 "${workspaceFolder}/SearvidsServer/src",
-                "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp",
-                "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp/include",
-                "${workspaceFolder}/SearvidsServer/third_party/whisper.cpp/ggml/include",
                 "${workspaceFolder}/SearvidsServer/third_party/hnswlib",
                 "${workspaceFolder}/SearvidsServer/third_party/hnswlib/hnswlib",
                 "${workspaceFolder}/SearvidsServer/third_party/onnxruntime_include",
