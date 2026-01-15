@@ -61,17 +61,22 @@ void init_db() {
                     video_id TEXT PRIMARY KEY,
                     url TEXT UNIQUE NOT NULL,
                     platform TEXT,
-                    title TEXT,
                     index_path TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     access_count INT DEFAULT 1,
-                    last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    dataset_group VARCHAR(50)
                 );
             )");
             
             // Migration for existing tables
             try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 1;"); } catch (...) {}
             try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"); } catch (...) {}
+            
+            // [NEW] Dataset Group for Research Experiments
+            try { 
+                W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS dataset_group VARCHAR(50);"); 
+                W.exec("CREATE INDEX IF NOT EXISTS idx_videos_dataset_group ON videos(dataset_group);");
+            } catch (...) {}
 
             // Access Logs for Monthly Stats
             W.exec(R"(
@@ -114,7 +119,7 @@ void update_video_stats(const std::string& video_id) {
 }
 
 void enforce_disk_cache_policy() {
-    const int MAX_CACHE_SIZE = 3; // Keep only top 3 for testing
+    const int MAX_CACHE_SIZE = 5; // Keep only top 5 for testing
     try {
         pqxx::connection C(DB_CONN_STR);
         if (C.is_open()) {
@@ -195,10 +200,18 @@ static std::mutex g_siglip_mtx;
 static siglip_onnx::SiglipOnnx& get_siglip() {
     std::lock_guard<std::mutex> lock(g_siglip_mtx);
     if (!g_siglip_ptr) {
+        bool use_gpu = false;
+        if (const char* env_p = std::getenv("USE_GPU")) {
+            std::string env_s(env_p);
+            std::transform(env_s.begin(), env_s.end(), env_s.begin(), ::tolower);
+            if (env_s == "true" || env_s == "1") use_gpu = true;
+        }
+        std::cout << "[Server] Initializing SigLIP with GPU=" << (use_gpu ? "ON" : "OFF") << std::endl;
+
         g_siglip_ptr = std::make_unique<siglip_onnx::SiglipOnnx>(
             "/app/models/siglip_text/model.onnx",
             "/app/models/siglip_vision/model.onnx",
-            false,           // device_gpu
+            use_gpu,           // device_gpu
             224             // image size
         );
     }
@@ -1055,9 +1068,11 @@ void setup_routes(crow::SimpleApp& app) {
             pqxx::connection C(DB_CONN_STR);
             if (C.is_open()) {
                 pqxx::work W(C);
-                pqxx::result R = W.exec_params("SELECT index_path FROM videos WHERE url = $1", url);
+                pqxx::result R = W.exec_params("SELECT index_path, duration_ms FROM videos WHERE url = $1", url);
                 if (!R.empty()) {
                     std::string index_path = R[0][0].as<std::string>();
+                    int64_t dur = R[0][1].as<int64_t>(0);
+
                     if (std::filesystem::exists(index_path + ".index")) {
                         std::cout << "[Cache Hit] Loading index for " << vid << std::endl;
                         hnsw_index::load(index_path);
@@ -1065,6 +1080,7 @@ void setup_routes(crow::SimpleApp& app) {
                         auto sess = std::make_shared<VideoSession>();
                         sess->video_id = vid;
                         sess->source_url = url;
+                        sess->duration_ms = dur;
                         sess->done = true;
                         sess->progress_percent = 100;
                         sess->current_stage = "completed (cached)";

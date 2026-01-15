@@ -1,9 +1,9 @@
 services:
   backend:
-    build: 
+    build:
       context: .
       dockerfile: SearvidsServer/Dockerfile.local
-    container_name: searvids-backend-local
+    container_name: searvids-backend
     ports:
       - "8080:8080"
     volumes:
@@ -12,13 +12,18 @@ services:
     environment:
       - MODEL_PATH=/app/models
       - WHISPER_MODEL_SIZE=base
-      # Force CPU usage for scripts if they check for CUDA
-      - CUDA_VISIBLE_DEVICES=
+      - POSTGRES_USER=searvids_user
+      - POSTGRES_PASSWORD=searvids_pass
+      - POSTGRES_DB=searvids_db
+      - DB_HOST=db
+      - USE_GPU=false # Explicitly disable GPU
+    depends_on:
+      - db
     restart: always
 
   frontend:
     build: ./searvids-client
-    container_name: searvids-frontend-local
+    container_name: searvids-frontend
     ports:
       - "80:80"
     depends_on:
@@ -27,14 +32,12 @@ services:
 
   db:
     image: postgres:15-alpine
-    container_name: searvids-db-local
+    container_name: searvids-db
     restart: always
     environment:
       POSTGRES_USER: searvids_user
       POSTGRES_PASSWORD: searvids_pass
       POSTGRES_DB: searvids_db
-    ports:
-      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
