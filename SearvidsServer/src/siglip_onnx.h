@@ -41,6 +41,11 @@ public:
                                     int width, 
                                     int height);
 
+    // [NEW] Encode batch of images -> embeddings (N x D)
+    std::vector<std::vector<float>> encodeBatch(const std::vector<std::vector<uint8_t>>& batch_rgb,
+                                                int width,
+                                                int height);
+
     // Cosine similarity utility
     static float cosineSimilarity(const std::vector<float>& a, const std::vector<float>& b);
 

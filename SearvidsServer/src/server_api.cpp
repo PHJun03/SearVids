@@ -71,12 +71,6 @@ void init_db() {
             // Migration for existing tables
             try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 1;"); } catch (...) {}
             try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"); } catch (...) {}
-            
-            // [NEW] Dataset Group for Research Experiments
-            try { 
-                W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS dataset_group VARCHAR(50);"); 
-                W.exec("CREATE INDEX IF NOT EXISTS idx_videos_dataset_group ON videos(dataset_group);");
-            } catch (...) {}
 
             // Access Logs for Monthly Stats
             W.exec(R"(
@@ -329,34 +323,82 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                         q.pop();
                                         return item;
                                     }
+                                    // [NEW] Batch Pop
+                                    std::vector<QueueItem> pop_batch(int limit) {
+                                        std::unique_lock<std::mutex> lk(m);
+                                        cv.wait(lk, [this]{ return !q.empty(); });
+                                        std::vector<QueueItem> items;
+                                        items.reserve(limit);
+                                        while (!q.empty() && items.size() < limit) {
+                                            items.push_back(std::move(q.front()));
+                                            q.pop();
+                                        }
+                                        return items;
+                                    }
                                 } frame_queue;
 
                                 auto consumer_thread = std::thread([&sess, &siglip, &frame_queue, current_start, total_duration_sec]() {
                                     while (true) {
                                         if (sess.cancelled) break;
-                                        auto item = frame_queue.pop();
-                                        if (item.is_end) break;
-                                        try {
-                                            auto& frame = item.frame;
-                                            int64_t real_timestamp_ms = frame.timestamp_ms + (current_start * 1000);
-                                            
-                                            auto emb = siglip.encodeImage(frame.rgb_data, frame.width, frame.height);
-                                            hnsw_index::add(
-                                                emb,
-                                                sess.video_id,
-                                                static_cast<float>(real_timestamp_ms) / 1000.0f,
-                                                static_cast<float>(real_timestamp_ms) / 1000.0f + 1.0f,
-                                                "visual_frame"
-                                            );
-                                            sess.indexed_visual_frames++;
-                                            
-                                            double progress = (double)real_timestamp_ms / (double)(total_duration_sec * 1000);
-                                            if (progress > 1.0) progress = 1.0;
-                                            int p = (int)(progress * 100.0);
-                                            if (p > sess.progress_percent) sess.progress_percent = p;
-                                            
-                                            broadcast_status(sess.video_id, sess);
-                                        } catch (...) {}
+                                        
+                                        // 1. Get Batch (Size 32)
+                                        auto items = frame_queue.pop_batch(32);
+                                        if (items.empty()) break;
+
+                                        std::vector<std::vector<uint8_t>> batch_rgb;
+                                        std::vector<size_t> valid_indices;
+                                        bool received_end = false;
+
+                                        // 2. Filter valid frames
+                                        for(size_t i=0; i<items.size(); ++i) {
+                                            if (items[i].is_end) {
+                                                received_end = true;
+                                                // Don't break immediately, process what we have first? 
+                                                // Actually if is_end is in batch, subsequent items shouldn't exist ideally.
+                                                // But let's just stop collecting.
+                                                break; 
+                                            }
+                                            batch_rgb.push_back(std::move(items[i].frame.rgb_data));
+                                            valid_indices.push_back(i);
+                                        }
+
+                                        if (!batch_rgb.empty()) {
+                                            try {
+                                                // 3. Batch Inference
+                                                // Use width/height from first frame
+                                                int w = items[valid_indices[0]].frame.width;
+                                                int h = items[valid_indices[0]].frame.height;
+                                                
+                                                auto results = siglip.encodeBatch(batch_rgb, w, h);
+
+                                                // 4. Indexing
+                                                for(size_t k=0; k<results.size(); ++k) {
+                                                    const auto& frame = items[valid_indices[k]].frame;
+                                                    const auto& emb = results[k];
+                                                    int64_t real_timestamp_ms = frame.timestamp_ms + (current_start * 1000);
+                                                    
+                                                    hnsw_index::add(
+                                                        emb,
+                                                        sess.video_id,
+                                                        static_cast<float>(real_timestamp_ms) / 1000.0f,
+                                                        static_cast<float>(real_timestamp_ms) / 1000.0f + 1.0f,
+                                                        "visual_frame"
+                                                    );
+                                                    sess.indexed_visual_frames++;
+                                                    
+                                                    // Update Progress (only occasionally)
+                                                    if (k == results.size() - 1) { 
+                                                        double progress = (double)real_timestamp_ms / (double)(total_duration_sec * 1000);
+                                                        if (progress > 1.0) progress = 1.0;
+                                                        int p = (int)(progress * 100.0);
+                                                        if (p > sess.progress_percent) sess.progress_percent = p;
+                                                        broadcast_status(sess.video_id, sess);
+                                                    }
+                                                }
+                                            } catch (...) {}
+                                        }
+
+                                        if (received_end) break;
                                     }
                                 });
 
@@ -523,75 +565,78 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                             q.pop();
                             return item;
                         }
+
+                        // [NEW] Batch Pop
+                        std::vector<QueueItem> pop_batch(int limit) {
+                            std::unique_lock<std::mutex> lk(m);
+                            cv.wait(lk, [this]{ return !q.empty(); });
+                            std::vector<QueueItem> items;
+                            items.reserve(limit);
+                            while (!q.empty() && items.size() < limit) {
+                                items.push_back(std::move(q.front()));
+                                q.pop();
+                            }
+                            return items;
+                        }
                     } frame_queue;
 
                     // Consumer Thread: CLIP Inference & Indexing
                     auto consumer_thread = std::thread([&sess, &siglip, &frame_queue]() {
-                        std::vector<uint8_t> last_rgb;
-                        std::vector<float> last_emb;
-
                         while (true) {
                             if (sess.cancelled) break;
-                            auto item = frame_queue.pop();
-                            if (item.is_end) break;
                             
-                            try {
-                                auto& frame = item.frame;
-                                std::vector<float> emb;
+                            // 1. Get Batch
+                            auto items = frame_queue.pop_batch(32);
+                            if (items.empty()) break;
 
-                                // Optimization: Scene Change Detection
-                                // If the current frame is very similar to the previous one, reuse the embedding.
-                                // This skips the heavy CLIP inference step.
-                                bool is_similar = false;
-                                if (!last_rgb.empty() && !last_emb.empty() && last_rgb.size() == frame.rgb_data.size()) {
-                                    long long diff_sum = 0;
-                                    size_t step = 13; // Check every 13th pixel for speed (prime number to avoid patterns)
-                                    size_t count = 0;
-                                    const uint8_t* curr_ptr = frame.rgb_data.data();
-                                    const uint8_t* prev_ptr = last_rgb.data();
-                                    
-                                    for (size_t i = 0; i < frame.rgb_data.size(); i += step) {
-                                        diff_sum += std::abs((int)curr_ptr[i] - (int)prev_ptr[i]);
-                                        count++;
-                                    }
-                                    
-                                    // Threshold: Average pixel difference < 10 (out of 255)
-                                    // This means the image is roughly 96% similar
-                                    if ((double)diff_sum / count < 10.0) { 
-                                        is_similar = true;
-                                    }
-                                }
+                            std::vector<std::vector<uint8_t>> batch_rgb;
+                            std::vector<size_t> valid_indices;
+                            bool received_end = false;
 
-                                if (is_similar) {
-                                    emb = last_emb; // Reuse previous embedding (Fast!)
-                                } else {
-                                    emb = siglip.encodeImage(frame.rgb_data, frame.width, frame.height); // Run CLIP (Slow)
-                                    last_emb = emb;
-                                    last_rgb = frame.rgb_data;
+                            for(size_t i=0; i<items.size(); ++i) {
+                                if (items[i].is_end) {
+                                    received_end = true;
+                                    break;
                                 }
-
-                                hnsw_index::add(
-                                    emb,
-                                    sess.video_id,
-                                    static_cast<float>(frame.timestamp_ms) / 1000.0f,
-                                    static_cast<float>(frame.timestamp_ms) / 1000.0f + 1.0f,
-                                    "visual_frame"
-                                );
-                                sess.indexed_visual_frames++;
-                                
-                                // Update progress (Visual is approx 30% of total, from 15% to 45%)
-                                if (sess.nb_frames > 0) {
-                                    double progress = (double)frame.timestamp_ms / (double)sess.duration_ms;
-                                    if (progress > 1.0) progress = 1.0;
-                                    int p = 15 + (int)(30.0 * progress);
-                                    if (p > sess.progress_percent) sess.progress_percent = p;
-                                }
-                                
-                                // Broadcast update
-                                broadcast_status(sess.video_id, sess);
-                            } catch (const std::exception& e) {
-                                std::cerr << "[" << sess.video_id << "] CLIP inference failed: " << e.what() << std::endl;
+                                batch_rgb.push_back(std::move(items[i].frame.rgb_data));
+                                valid_indices.push_back(i);
                             }
+
+                            if (!batch_rgb.empty()) {
+                                try {
+                                    int w = items[valid_indices[0]].frame.width;
+                                    int h = items[valid_indices[0]].frame.height;
+                                    
+                                    auto results = siglip.encodeBatch(batch_rgb, w, h);
+
+                                    for(size_t k=0; k<results.size(); ++k) {
+                                        const auto& frame = items[valid_indices[k]].frame;
+                                        const auto& emb = results[k];
+                                        
+                                        hnsw_index::add(
+                                            emb,
+                                            sess.video_id,
+                                            static_cast<float>(frame.timestamp_ms) / 1000.0f,
+                                            static_cast<float>(frame.timestamp_ms) / 1000.0f + 1.0f,
+                                            "visual_frame"
+                                        );
+                                        sess.indexed_visual_frames++;
+                                        
+                                        // Update progress
+                                        if (sess.nb_frames > 0 && k == results.size() - 1) {
+                                            double progress = (double)frame.timestamp_ms / (double)sess.duration_ms;
+                                            if (progress > 1.0) progress = 1.0;
+                                            int p = 15 + (int)(30.0 * progress);
+                                            if (p > sess.progress_percent) sess.progress_percent = p;
+                                            broadcast_status(sess.video_id, sess);
+                                        }
+                                    }
+                                } catch (const std::exception& e) {
+                                    std::cerr << "[" << sess.video_id << "] CLIP inference failed: " << e.what() << std::endl;
+                                }
+                            }
+                            
+                            if (received_end) break;
                         }
                     });
 

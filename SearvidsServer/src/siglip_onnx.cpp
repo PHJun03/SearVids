@@ -495,6 +495,82 @@ std::vector<float> SiglipOnnx::encodeImage(const std::vector<uint8_t>& rgb_data,
     return res;
 }
 
+std::vector<std::vector<float>> SiglipOnnx::encodeBatch(const std::vector<std::vector<uint8_t>>& batch_rgb,
+                                                        int width,
+                                                        int height) {
+    size_t batch_size = batch_rgb.size();
+    if (batch_size == 0) return {};
+
+    // 1. Preprocess all images
+    std::vector<float> input_batch;
+    input_batch.reserve(batch_size * 3 * image_size_ * image_size_);
+    
+    for (const auto& rgb : batch_rgb) {
+        auto chw = preprocessRGBBuffer(rgb, width, height);
+        input_batch.insert(input_batch.end(), chw.begin(), chw.end());
+    }
+
+    // 2. Prepare Tensor
+    std::vector<int64_t> input_shape = {static_cast<int64_t>(batch_size), 3, image_size_, image_size_};
+    
+    Ort::MemoryInfo mem_info = Ort::MemoryInfo::CreateCpu(OrtArenaAllocator, OrtMemTypeDefault);
+    Ort::Value input_tensor = Ort::Value::CreateTensor<float>(
+        mem_info, 
+        input_batch.data(), 
+        input_batch.size(), 
+        input_shape.data(), 
+        input_shape.size()
+    );
+
+    const char* input_names[] = { vision_input_name_.c_str() };
+    const char* output_names[] = { vision_output_name_.c_str() };
+
+    // 3. Run Session
+    try {
+        if (!vision_session_) throw std::runtime_error("Vision session not initialized");
+
+        auto output_tensors = vision_session_->Run(Ort::RunOptions{nullptr}, 
+                                                   input_names, &input_tensor, 1, 
+                                                   output_names, 1);
+        
+        Ort::Value& out = output_tensors.front();
+        auto shape = out.GetTensorTypeAndShapeInfo().GetShape();
+        float* out_data = out.GetTensorMutableData<float>();
+        
+        // Handle Output Shape [N, D]
+        // Currently assuming [N, D]. If strict SigLIP pooler_output, it is [N, D].
+        size_t dim = 0;
+        if (shape.size() == 2) {
+             dim = shape[1];
+        } else if (shape.size() == 3) {
+             // [N, seq, dim] -> average? 
+             // Logic in runVisionSession handles this for N=1. 
+             // For batch, we'll assume user model outputs pooler [N, D].
+             dim = shape[2]; 
+        }
+
+        if (dim == 0) {
+             // Fallback: try element count / batch_size
+             size_t total = out.GetTensorTypeAndShapeInfo().GetElementCount();
+             dim = total / batch_size;
+        }
+        
+        std::vector<std::vector<float>> results;
+        results.reserve(batch_size);
+        
+        for (size_t i = 0; i < batch_size; ++i) {
+            std::vector<float> vec(out_data + i * dim, out_data + (i + 1) * dim);
+            results.push_back(l2Normalize(vec));
+        }
+        
+        return results;
+
+    } catch (const std::exception& e) {
+        std::cerr << "Batch inference error: " << e.what() << std::endl;
+        return {};
+    }
+}
+
 /* ---------------------------
    Node name setters
    --------------------------- */
