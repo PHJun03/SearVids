@@ -13,6 +13,8 @@ services:
       - MODEL_PATH=/app/models
       - WHISPER_MODEL_SIZE=base
       - USE_GPU=true
+      # DataImpulse Residential Proxy
+      # - HTTP_PROXY=http://
       - POSTGRES_USER=searvids_user
       - POSTGRES_PASSWORD=searvids_pass
       - POSTGRES_DB=searvids_db

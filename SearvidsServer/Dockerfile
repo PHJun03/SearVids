@@ -21,10 +21,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ARG ORT_VERSION=1.23.2
 WORKDIR /tmp
 RUN wget -q https://github.com/microsoft/onnxruntime/releases/download/v${ORT_VERSION}/onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz \
- && tar -xzf onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz \
- && mkdir -p /app/third_party/onnxruntime \
- && cp -r onnxruntime-linux-x64-gpu-${ORT_VERSION}/* /app/third_party/onnxruntime/ \
- && rm -rf onnxruntime-linux-x64-gpu-${ORT_VERSION}*
+    && tar -xzf onnxruntime-linux-x64-gpu-${ORT_VERSION}.tgz \
+    && mkdir -p /app/third_party/onnxruntime \
+    && cp -r onnxruntime-linux-x64-gpu-${ORT_VERSION}/* /app/third_party/onnxruntime/ \
+    && rm -rf onnxruntime-linux-x64-gpu-${ORT_VERSION}*
 
 # Install Crow (C++ Microframework for Web)
 RUN git clone --branch v1.2.0 https://github.com/CrowCpp/Crow.git /tmp/crow \
@@ -47,7 +47,8 @@ RUN mkdir build && cd build && \
 RUN mkdir -p /app/build/bin/tensorrt_cache
 
 # 2. Runtime Stage
-FROM nvcr.io/nvidia/tensorrt:23.10-py3 AS runtime
+# Use newer CUDA image that includes cuDNN 9 (Required by ORT 1.19+)
+FROM nvidia/cuda:12.4.1-cudnn-runtime-ubuntu22.04 AS runtime
 ENV DEBIAN_FRONTEND=noninteractive
 ENV HF_HOME=/app/models/hf_cache
 

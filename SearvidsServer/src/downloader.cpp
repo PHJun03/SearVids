@@ -128,8 +128,15 @@ static bool download_with_ytdlp(const std::string& url, const std::string& outpu
     // --no-warnings - suppress warnings
     // -o output_path - output file path
     std::ostringstream cmd;
-    cmd << "yt-dlp -f \"best[ext=mp4]/best\" --no-playlist --no-warnings -o \"" 
-        << output_path << "\" \"" << url << "\"";
+    cmd << "yt-dlp -f \"best[ext=mp4]/best\" --no-playlist --no-warnings";
+
+    // Proxy Support via Environment Variable
+    const char* proxy_env = std::getenv("HTTP_PROXY");  // Set proxy in docker-compose.yml
+    if (proxy_env) {
+        cmd << " --proxy \"" << proxy_env << "\"";
+    }
+
+    cmd << " -o \"" << output_path << "\" \"" << url << "\"";
     
 #ifdef _WIN32
     cmd << " >nul 2>&1";  // Suppress output on Windows
@@ -197,6 +204,12 @@ static bool download_with_curl(const std::string& url, const std::string& output
     curl_easy_setopt(curl, CURLOPT_TIMEOUT, 300L);  // 5 minutes timeout
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYPEER, 0L);  // For development only
     curl_easy_setopt(curl, CURLOPT_SSL_VERIFYHOST, 0L);  // For development only
+
+    // [NEW] Proxy support for Curl
+    const char* proxy_env = std::getenv("HTTP_PROXY");
+    if (proxy_env) {
+        curl_easy_setopt(curl, CURLOPT_PROXY, proxy_env);
+    }
     
     // Write callback
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, write_callback);
@@ -238,16 +251,19 @@ bool download(const std::string& url, const std::string& output_path, ProgressCa
         return false;
     }
     
-    // Use yt-dlp for YouTube URLs
-    if (is_youtube_url(url)) {
-        if (!is_ytdlp_available()) {
-            std::cerr << "yt-dlp is not available. Please install it: winget install yt-dlp" << std::endl;
-            return false;
+    // Use yt-dlp by default for ALL URLs (it handles almost everything + has proxy support)
+    // Only verify yt-dlp availability first
+    if (is_ytdlp_available()) {
+        // Try yt-dlp first
+        if (download_with_ytdlp(url, output_path, callback)) {
+            return true;
         }
-        return download_with_ytdlp(url, output_path, callback);
+        std::cout << "yt-dlp failed, falling back to curl..." << std::endl;
+    } else {
+        std::cerr << "Warning: yt-dlp not found. Proceeding with basic curl..." << std::endl;
     }
     
-    // Use curl for regular URLs
+    // Fallback: Use curl for regular URLs or if yt-dlp fails
     return download_with_curl(url, output_path, callback);
 }
 
@@ -273,7 +289,13 @@ bool download_with_retry(const std::string& url, const std::string& output_path,
 int64_t get_duration(const std::string& url) {
     if (!is_ytdlp_available()) return -1;
 
-    std::string cmd = "yt-dlp --print duration --no-warnings \"" + url + "\"";
+    std::string proxy_arg = "";
+    const char* proxy_env = std::getenv("HTTP_PROXY");
+    if (proxy_env) {
+        proxy_arg = " --proxy \"" + std::string(proxy_env) + "\"";
+    }
+
+    std::string cmd = "yt-dlp --print duration --no-warnings" + proxy_arg + " \"" + url + "\"";
     FILE* pipe = 
 #ifdef _WIN32
         _popen(cmd.c_str(), "r");
@@ -314,8 +336,15 @@ bool download_section(const std::string& url, const std::string& output_path, in
     // yt-dlp --download-sections "*start-end"
     std::ostringstream cmd;
     cmd << "yt-dlp -f \"best[ext=mp4]/best\" --no-playlist --no-warnings "
-        << "--download-sections \"*" << start_sec << "-" << end_sec << "\" "
-        << "-o \"" << output_path << "\" \"" << url << "\"";
+        << "--download-sections \"*" << start_sec << "-" << end_sec << "\"";
+
+    // [NEW] Proxy
+    const char* proxy_env = std::getenv("HTTP_PROXY");
+    if (proxy_env) {
+        cmd << " --proxy \"" << proxy_env << "\"";
+    }
+
+    cmd << " -o \"" << output_path << "\" \"" << url << "\"";
     
 #ifdef _WIN32
     cmd << " >nul 2>&1";
