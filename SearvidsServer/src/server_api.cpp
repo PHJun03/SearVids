@@ -64,13 +64,15 @@ void init_db() {
                     index_path TEXT,
                     access_count INT DEFAULT 1,
                     last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    dataset_group VARCHAR(50)
+                    dataset_group VARCHAR(50),
+                    duration_ms BIGINT
                 );
             )");
             
             // Migration for existing tables
             try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS access_count INT DEFAULT 1;"); } catch (...) {}
             try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS last_accessed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP;"); } catch (...) {}
+            try { W.exec("ALTER TABLE videos ADD COLUMN IF NOT EXISTS duration_ms BIGINT;"); } catch (...) {}
 
             // Access Logs for Monthly Stats
             W.exec(R"(

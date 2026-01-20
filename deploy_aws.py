@@ -382,7 +382,7 @@ class AWSDeployer:
     
     def run_benchmark(self):
         """Step 8: Run benchmark suite"""
-        self.log("8/10", "Running benchmark suite (manual fallback)...", 'yellow')
+        self.log("8/10", "Running Comprehensive Benchmark Suite (10 Videos using Residential Proxy)...", 'yellow')
         
         # Upload manual script
         subprocess.run([
@@ -428,14 +428,32 @@ class AWSDeployer:
     
     def cleanup(self):
         """Step 10: Terminate instance and clean up"""
-        self.log("10/10", "Cleanup called. SKIPPING FORCEFULLY.", 'yellow')
-        return
+        if self.skip_cleanup:
+            self.log("10/10", "Skip cleanup requested. Leaving instance running.", 'yellow')
+            return
+
+        self.log("10/10", "Terminating instance and cleaning up...", 'yellow')
+        try:
+            if self.instance_id:
+                self.ec2_resource.Instance(self.instance_id).terminate()
+                self.log("10/10", f"✓ Instance {self.instance_id} terminated", 'green')
+            
+            if self.key_name:
+                self.ec2_client.delete_key_pair(KeyName=self.key_name)
+                self.log("10/10", f"✓ Key pair {self.key_name} deleted", 'green')
+                
+            if self.key_path and os.path.exists(self.key_path):
+                os.remove(self.key_path)
+                self.log("10/10", f"✓ Local key file deleted", 'green')
+                
+        except Exception as e:
+            self.log("10/10", f"❌ Cleanup failed: {e}", 'red')
 
     def run(self):
         """Execute full deployment pipeline"""
         try:
             if self.public_ip and self.key_path:
-                 # ... (manual mode code) ...
+                 # Manual mode
                  pass
             else:
                 # Automatic Mode
@@ -451,7 +469,7 @@ class AWSDeployer:
             self.run_benchmark()
             self.run_search_benchmark()
             self.download_results()
-            # self.cleanup() # DISABLED
+            self.cleanup() # ENABLED
             
             # Final summary
             print("\n" + "="*50)
