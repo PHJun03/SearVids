@@ -15,6 +15,8 @@
 #include <chrono>
 #include <functional>
 #include <iostream>
+#include <curl/curl.h>
+#include <nlohmann/json.hpp>
 
 #if defined(_WIN32)
     #define NOMINMAX
@@ -43,6 +45,38 @@ static std::string escape_arg_posix(const std::string& s) {
     return out;
 }
 
+// Helper for Curl
+static size_t WriteCallback(void* contents, size_t size, size_t nmemb, void* userp) {
+    ((std::string*)userp)->append((char*)contents, size * nmemb);
+    return size * nmemb;
+}
+
+static std::string http_post(const std::string& url, const std::string& json_payload, int timeout_sec) {
+    CURL* curl = curl_easy_init();
+    if (!curl) throw std::runtime_error("CURL init failed");
+
+    std::string response_buffer;
+    struct curl_slist* headers = NULL;
+    headers = curl_slist_append(headers, "Content-Type: application/json");
+
+    curl_easy_setopt(curl, CURLOPT_URL, url.c_str());
+    curl_easy_setopt(curl, CURLOPT_POSTFIELDS, json_payload.c_str());
+    curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
+    curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, WriteCallback);
+    curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response_buffer);
+    curl_easy_setopt(curl, CURLOPT_TIMEOUT, static_cast<long>(timeout_sec));
+
+    CURLcode res = curl_easy_perform(curl);
+    
+    curl_slist_free_all(headers);
+    curl_easy_cleanup(curl);
+
+    if (res != CURLE_OK) {
+        throw std::runtime_error(std::string("CURL request failed: ") + curl_easy_strerror(res));
+    }
+    return response_buffer;
+}
+
 WhisperWrapper::WhisperWrapper() {
     // default: try common executable names
     cliExe = "whisper"; // prefer 'whisper' if present
@@ -58,6 +92,10 @@ void WhisperWrapper::setCliExecutable(const std::string& path) {
 
 void WhisperWrapper::setCliArgsTemplate(const std::string& tpl) {
     argsTemplate = tpl;
+}
+
+void WhisperWrapper::setServerUrl(const std::string& url) {
+    serverUrl = url;
 }
 
 bool WhisperWrapper::cli_available() const {
@@ -347,6 +385,23 @@ std::pair<int,std::string> WhisperWrapper::runCommandCapture(const std::vector<s
 }
 
 std::string WhisperWrapper::transcribe_from_file(const std::string& infile, int timeout_seconds) const {
+    if (!serverUrl.empty()) {
+        try {
+            nlohmann::json req;
+            req["file_path"] = infile;
+            std::string url = serverUrl + "/transcribe";
+            std::string resp = http_post(url, req.dump(), timeout_seconds);
+            
+            auto j = nlohmann::json::parse(resp);
+            if (j.contains("error")) {
+                throw std::runtime_error("Server error: " + j["error"].get<std::string>());
+            }
+            return j["transcript"].get<std::string>();
+        } catch (const std::exception& e) {
+            throw std::runtime_error(std::string("HTTP Transcription failed: ") + e.what());
+        }
+    }
+
     if (cliExe.empty()) throw std::runtime_error("whisper CLI executable not configured");
 
     auto cmd = buildCommand(infile);
@@ -375,6 +430,18 @@ std::string WhisperWrapper::transcribe_from_file(const std::string& infile, int 
 void WhisperWrapper::transcribe_with_callback(const std::string& infile, 
                                               std::function<void(const std::string&)> callback,
                                               int timeout_seconds) const {
+    if (!serverUrl.empty()) {
+        try {
+            // For now, no streaming support in HTTP client; just get full result and callback once.
+            // Since analysis is chunked (3 mins), waiting for full result is acceptable.
+            std::string transcript = transcribe_from_file(infile, timeout_seconds);
+            if (callback) callback(transcript);
+        } catch (const std::exception& e) {
+            std::cerr << "[WhisperWrapper] HTTP Callback Error: " << e.what() << std::endl;
+        }
+        return;
+    }
+
     auto cmd = buildCommand(infile);
     std::cout << "[WhisperWrapper] Running command: ";
     for (const auto& arg : cmd) std::cout << arg << " ";

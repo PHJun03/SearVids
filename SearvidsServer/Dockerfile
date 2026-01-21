@@ -56,7 +56,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates python3 python3-pip \
     libswscale5 libswresample3 libavcodec58 libavformat58 libavutil56 libavfilter7 \
     libcurl4 libopencv-core4.5d libopencv-imgcodecs4.5d libopencv-imgproc4.5d ffmpeg libpqxx-6.4 \
-    && pip install --no-cache-dir -U yt-dlp transformers faster-whisper sentencepiece \
+    && pip install --no-cache-dir -U yt-dlp transformers faster-whisper sentencepiece flask \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -65,6 +65,7 @@ ENV LD_LIBRARY_PATH=/app/third_party/onnxruntime/lib:$LD_LIBRARY_PATH
 COPY --from=builder /app/build/SearvidsServer /app/SearvidsServer
 COPY --from=builder /app/src/tokenizer.py /app/tokenizer.py
 COPY --from=builder /app/src/whisper_ct2.py /app/whisper_ct2.py
+COPY --from=builder /app/src/whisper_server.py /app/whisper_server.py
 COPY --from=builder /app/third_party/onnxruntime /app/third_party/onnxruntime
 
 RUN echo "/app/third_party/onnxruntime/lib" > /etc/ld.so.conf.d/onnxruntime.conf && ldconfig

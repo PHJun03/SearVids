@@ -38,6 +38,10 @@ public:
     // Optional: template for CLI args; use "{infile}" as placeholder for input path.
     // Example template: "--task transcribe --model tiny.en {infile}"
     void setCliArgsTemplate(const std::string& tpl);
+    
+    // Set HTTP Server URL (e.g., "http://localhost:5000")
+    // If set, transcription will be performed via HTTP POST request to this server.
+    void setServerUrl(const std::string& url);
 
     // Transcribe a file synchronously. Returns transcript on success, throws std::runtime_error on failure.
     // timeout_seconds: if <=0, no timeout.
@@ -62,6 +66,7 @@ public:
 private:
     std::string cliExe;        // path to CLI or program name
     std::string argsTemplate;  // template string containing "{infile}"
+    std::string serverUrl;     // HTTP Server URL
 };
 
 } // namespace whisper_wrapper

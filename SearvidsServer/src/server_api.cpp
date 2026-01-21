@@ -36,10 +36,51 @@ whisper_wrapper::WhisperWrapper g_whisper;
 // Database connection string
 const std::string DB_CONN_STR = "postgresql://searvids_user:searvids_pass@db:5432/searvids_db";
 
+class ConnectionPool {
+    std::mutex m_mutex;
+    std::vector<std::shared_ptr<pqxx::connection>> m_pool;
+    std::string m_conn_str;
+    const size_t MAX_POOL_SIZE = 10;
+
+public:
+    ConnectionPool(const std::string& conn_str) : m_conn_str(conn_str) {
+        m_pool.reserve(MAX_POOL_SIZE);
+    }
+
+    std::shared_ptr<pqxx::connection> get_connection() {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!m_pool.empty()) {
+            auto conn = m_pool.back();
+            m_pool.pop_back();
+            if (conn->is_open()) return conn;
+        }
+        return std::make_shared<pqxx::connection>(m_conn_str);
+    }
+
+    void return_connection(std::shared_ptr<pqxx::connection> conn) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (m_pool.size() < MAX_POOL_SIZE && conn->is_open()) {
+            m_pool.push_back(conn);
+        }
+    }
+};
+
+ConnectionPool g_db_pool(DB_CONN_STR);
+
+class PooledConnection {
+    std::shared_ptr<pqxx::connection> conn;
+public:
+    PooledConnection() : conn(g_db_pool.get_connection()) {}
+    ~PooledConnection() { g_db_pool.return_connection(conn); }
+    pqxx::connection& get() { return *conn; }
+    pqxx::connection* operator->() { return conn.get(); }
+    bool is_open() const { return conn->is_open(); }
+};
+
 // Helper to check DB connection
 bool check_db_connection() {
     try {
-        pqxx::connection C(DB_CONN_STR);
+        PooledConnection C;
         if (C.is_open()) {
             return true;
         } else {
@@ -53,9 +94,9 @@ bool check_db_connection() {
 
 void init_db() {
     try {
-        pqxx::connection C(DB_CONN_STR);
+        PooledConnection C;
         if (C.is_open()) {
-            pqxx::work W(C);
+            pqxx::work W(C.get());
             W.exec(R"(
                 CREATE TABLE IF NOT EXISTS videos (
                     video_id TEXT PRIMARY KEY,
@@ -95,9 +136,9 @@ void init_db() {
 
 void update_video_stats(const std::string& video_id) {
     try {
-        pqxx::connection C(DB_CONN_STR);
+        PooledConnection C;
         if (C.is_open()) {
-            pqxx::work W(C);
+            pqxx::work W(C.get());
             // Update total count
             W.exec_params(R"(
                 UPDATE videos 
@@ -117,9 +158,9 @@ void update_video_stats(const std::string& video_id) {
 void enforce_disk_cache_policy() {
     const int MAX_CACHE_SIZE = 5; // Keep only top 5 for testing
     try {
-        pqxx::connection C(DB_CONN_STR);
+        PooledConnection C;
         if (C.is_open()) {
-            pqxx::work W(C);
+            pqxx::work W(C.get());
             
             // 1. Cleanup logs older than 30 days
             W.exec("DELETE FROM access_logs WHERE accessed_at < NOW() - INTERVAL '30 days'");
@@ -423,8 +464,15 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                                 std::string audio_path = chunk_path + ".wav";
                                 if (!ffmpeg_decoder::extract_audio(chunk_path, audio_path, 16000, 1, nullptr)) return;
                                 
-                                g_whisper.setCliExecutable("python3");
-                                g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
+                                if (!ffmpeg_decoder::extract_audio(chunk_path, audio_path, 16000, 1, nullptr)) return;
+                                
+                                const char* w_url = std::getenv("WHISPER_URL");
+                                if (w_url) {
+                                    g_whisper.setServerUrl(w_url);
+                                } else {
+                                    g_whisper.setCliExecutable("python3");
+                                    g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
+                                }
                                 
                                 std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
                                 auto& siglip = get_siglip();
@@ -678,8 +726,13 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
                     std::cout << "[" << sess.video_id << "] Starting transcription (CTranslate2)..." << std::endl;
                     
                     // Setup Whisper (Use Python script with faster-whisper)
-                    g_whisper.setCliExecutable("python3");
-                    g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
+                    const char* w_url = std::getenv("WHISPER_URL");
+                    if (w_url) {
+                        g_whisper.setServerUrl(w_url);
+                    } else {
+                        g_whisper.setCliExecutable("python3");
+                        g_whisper.setCliArgsTemplate("/app/whisper_ct2.py {infile}");
+                    }
                     
                     // Parse and Index incrementally
                     std::regex re(R"(\[(\d{2}):(\d{2}):(\d{2})\.(\d{3})\s-->\s(\d{2}):(\d{2}):(\d{2})\.(\d{3})\]\s+(.*))");
@@ -770,9 +823,9 @@ void analyze_video_async(std::shared_ptr<VideoSession> sess_ptr) {
             // Save HNSW index to disk
             hnsw_index::save(index_path);
             
-            pqxx::connection C(DB_CONN_STR);
+            PooledConnection C;
             if (C.is_open()) {
-                pqxx::work W(C);
+                pqxx::work W(C.get());
                 // Upsert (Insert or Update)
                 W.exec_params(R"(
                     INSERT INTO videos (video_id, url, index_path) 

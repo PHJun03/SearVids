@@ -19,6 +19,7 @@ services:
       - POSTGRES_PASSWORD=searvids_pass
       - POSTGRES_DB=searvids_db
       - DB_HOST=db
+      - WHISPER_URL=http://whisper-worker:5000
     deploy:
       resources:
         reservations:
@@ -35,6 +36,28 @@ services:
       - "80:80"
     depends_on:
       - backend
+    restart: always
+
+  whisper-worker:
+    build: ./SearvidsServer
+    container_name: searvids-whisper
+    command: [ "python3", "/app/whisper_server.py" ]
+    volumes:
+      - ./models:/app/models
+    environment:
+      - MODEL_PATH=/app/models
+      - WHISPER_MODEL_SIZE=base
+      - USE_GPU=true
+      - OMP_NUM_THREADS=4
+      - CT2_OMP_NUM_THREADS=4
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - capabilities: [ gpu ]
+        limits:
+          cpus: '2.0'
+          memory: 2G
     restart: always
 
   db:
