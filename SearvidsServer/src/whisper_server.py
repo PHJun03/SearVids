@@ -50,17 +50,31 @@ def transcribe():
 
         print(f"[WhisperServer] Transcribing: {file_path}", flush=True)
         
-        # Run inference
-        segments, info = model.transcribe(file_path, beam_size=5, vad_filter=True)
+        # Adaptive Segment Filter (VAD + Terminal Backup)
+        segments, info = model.transcribe(file_path, beam_size=5, vad_filter=False)
         
         # Stream results as a single string (to match old output format) or JSON list
         # To match C++ regex parsing: [00:00:00.000 --> 00:00:05.000] Text
         output_lines = []
+        
+        last_kept_end = 0.0
+        MIN_TERMINAL_DURATION = 10.0
+        SPEECH_THRESHOLD = 0.5 
+
         for segment in segments:
-            start_str = format_timestamp(segment.start)
-            end_str = format_timestamp(segment.end)
-            line = f"[{start_str} --> {end_str}] {segment.text}"
-            output_lines.append(line)
+            # Check for speech
+            is_speech = segment.no_speech_prob < SPEECH_THRESHOLD
+            
+            # Check for adaptive terminal
+            time_since_last = segment.start - last_kept_end
+            is_terminal_reached = time_since_last >= MIN_TERMINAL_DURATION
+
+            if is_speech or is_terminal_reached:
+                start_str = format_timestamp(segment.start)
+                end_str = format_timestamp(segment.end)
+                line = f"[{start_str} --> {end_str}] {segment.text}"
+                output_lines.append(line)
+                last_kept_end = segment.end
         
         full_text = "\n".join(output_lines)
         return jsonify({"transcript": full_text})

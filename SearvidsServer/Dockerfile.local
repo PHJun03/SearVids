@@ -42,7 +42,7 @@ COPY SearvidsServer .
 
 # Build (CPU Mode)
 RUN mkdir build && cd build && \
-    cmake .. -DCMAKE_BUILD_TYPE=Release && \
+    cmake .. -DCMAKE_BUILD_TYPE=Release -DUSE_TENSORRT=OFF && \
     make -j$(nproc)
 
 # 2. Runtime Stage

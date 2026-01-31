@@ -16,7 +16,7 @@ services:
       - POSTGRES_PASSWORD=searvids_pass
       - POSTGRES_DB=searvids_db
       - DB_HOST=db
-      - USE_GPU=false # Explicitly disable GPU
+      - USE_GPU=false # Disable GPU for CPU-only local env
       - WHISPER_URL=http://whisper-worker:5000
     depends_on:
       - db

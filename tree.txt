@@ -7,6 +7,7 @@ Searvids/
 │   │   ├───ffmpeg_decoder.h/.cpp
 │   │   ├───whisper_wrapper.h/.cpp
 │   │   ├───whisper_ct2.py
+│   │   ├───whisper_server.py
 │   │   ├───siglip_onnx.h/.cpp
 │   │   ├───tokenizer.py
 │   │   ├───hnsw_index.h/.cpp

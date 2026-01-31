@@ -52,16 +52,35 @@ def main():
         sys.exit(1)
 
     # Enable VAD filter (Silero VAD)
-    # min_silence_duration_ms: Minimum duration of silence to be considered as silence (default 2000ms might be too long for fast speech)
-    # We use default parameters for now, which are generally good.
-    segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=True)
+    # Adaptive Segment Filter (VAD + Terminal Backup)
+    # We disable built-in VAD filter to see ALL segments, then manually filter.
+    # Logic: Keep if (Speech Detected) OR (Time since last kept > 10.0s)
+    segments, info = model.transcribe(audio_file, beam_size=5, vad_filter=False)
+
+    last_kept_end = 0.0
+    MIN_TERMINAL_DURATION = 10.0
+    SPEECH_THRESHOLD = 0.5 # Threshold for no_speech_prob (lower means more likely speech)
 
     for segment in segments:
-        start_str = format_timestamp(segment.start)
-        end_str = format_timestamp(segment.end)
-        # Output format matching the C++ regex: [00:00:00.000 --> 00:00:05.000] Text
-        print(f"[{start_str} --> {end_str}] {segment.text}")
-        sys.stdout.flush()
+        # Check for speech
+        # no_speech_prob is high if silence/noise.
+        is_speech = segment.no_speech_prob < SPEECH_THRESHOLD
+        
+        # Check for adaptive terminal
+        time_since_last = segment.start - last_kept_end
+        is_terminal_reached = time_since_last >= MIN_TERMINAL_DURATION
+
+        if is_speech or is_terminal_reached:
+            # Keep this segment
+            start_str = format_timestamp(segment.start)
+            end_str = format_timestamp(segment.end)
+            # Output format matching the C++ regex: [00:00:00.000 --> 00:00:05.000] Text
+            print(f"[{start_str} --> {end_str}] {segment.text}")
+            sys.stdout.flush()
+            last_kept_end = segment.end
+        else:
+            # Drop segment (Silence/Noise and not enough time passed yet)
+            pass
 
 if __name__ == "__main__":
     main()

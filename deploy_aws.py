@@ -20,8 +20,9 @@ AMI_ID = "ami-05d2438ca66594916"  # Ubuntu 22.04 LTS
 VOLUME_SIZE = 100
 
 class AWSDeployer:
-    def __init__(self, region=REGION, skip_cleanup=True):
+    def __init__(self, region=REGION, tl_key=None, skip_cleanup=True):
         self.region = region
+        self.tl_key = tl_key
         self.skip_cleanup = True # FORCE TRUE FOR DEBUGGING
         self.ec2_client = boto3.client('ec2', region_name=region)
         self.ec2_resource = boto3.resource('ec2', region_name=region)
@@ -267,7 +268,8 @@ class AWSDeployer:
         run_remote('sudo apt-get update -y', 'System Update')
 
         # 3. Install Tools
-        run_remote('sudo apt-get install -y git build-essential curl wget', 'Install Basic Tools')
+        run_remote('sudo apt-get install -y git build-essential curl wget python3-pip', 'Install Basic Tools')
+        run_remote('pip3 install requests twelvelabs --break-system-packages', 'Install Python Libs')
 
         # 4. Install Drivers (Long step)
         run_remote('sudo apt-get install -y ubuntu-drivers-common && sudo ubuntu-drivers autoinstall', 'Install NVIDIA Drivers')
@@ -331,10 +333,16 @@ class AWSDeployer:
         
         def filter_func(tarinfo):
             name = tarinfo.name
+            # Exclude large/useless dirs
             if '/.git' in name or '/data' in name or '/.venv' in name or \
                '/node_modules' in name or '/benchmark_results' in name or \
-               '/models' in name or '/__pycache__' in name:
+               '/__pycache__' in name:
                 return None
+            
+            # Exclude specific large model dirs that can be reconstructed/downloaded
+            if '/models/hf_cache' in name or '/models/faster_whisper' in name or '/models/temp_export' in name:
+                return None
+                
             if name.endswith('.pem') or name.endswith('.tar.gz') or name.endswith('.log'):
                 return None
             return tarinfo
@@ -350,7 +358,7 @@ class AWSDeployer:
         # Extract
         subprocess.run([
             'ssh', '-i', self.key_path, f'ubuntu@{self.public_ip}',
-            'mkdir -p ~/searvids && tar -xzf searvids.tar.gz -C ~/searvids'
+            'mkdir -p ~/searvids && tar -xzf searvids.tar.gz -C ~/searvids && chmod -R 755 ~/searvids'
         ], check=True)
         
         os.remove(tar_path)
@@ -382,33 +390,19 @@ class AWSDeployer:
     
     def run_benchmark(self):
         """Step 8: Run benchmark suite"""
-        self.log("8/10", "Running Comprehensive Benchmark Suite (10 Videos using Residential Proxy)...", 'yellow')
+        self.log("8/10", "Running Comprehensive Benchmark (Searvids vs TwelveLabs)...", 'yellow')
         
-        # Upload manual script
-        subprocess.run([
-            'scp', '-i', self.key_path, 'tools/manual_benchmark.py', f'ubuntu@{self.public_ip}:~/searvids/tools/'
-        ], check=True)
-
-        # Run it
+        # Run run_aws_benchmark.py
+        cmd = 'cd ~/searvids && python3 tools/run_aws_benchmark.py --searvids-url http://localhost:8080'
+        if self.tl_key:
+            cmd += f' --tl-key {self.tl_key}'
+            
         subprocess.run([
             'ssh', '-i', self.key_path, f'ubuntu@{self.public_ip}',
-            'cd ~/searvids && python3 tools/manual_benchmark.py'
+            cmd
         ], check=True)
         
         self.log("8/10", "✓ Benchmark complete", 'green')
-
-    def run_search_benchmark(self):
-        """Step 8b: Run search latency benchmark"""
-        # Skip search benchmark for now or keep it? 
-        # Search benchmark doesn't need external access. Keep it.
-        self.log("8b/10", "Running search latency benchmark (remote)...", 'yellow')
-        
-        subprocess.run([
-            'ssh', '-i', self.key_path, f'ubuntu@{self.public_ip}',
-            'cd ~/searvids && python3 tools/benchmark_search.py --url http://localhost:8080 --total_requests 100 --output benchmark_results/aws_search_results.json'
-        ], check=True)
-        
-        self.log("8b/10", "✓ Search benchmark complete", 'green')
     
     def download_results(self):
         """Step 9: Download results and generate graphs"""
@@ -467,7 +461,6 @@ class AWSDeployer:
             self.deploy_searvids()
             self.start_server()
             self.run_benchmark()
-            self.run_search_benchmark()
             self.download_results()
             self.cleanup() # ENABLED
             
@@ -490,9 +483,10 @@ if __name__ == '__main__':
     parser.add_argument('--skip-cleanup', action='store_true', help='Keep instance running (for debugging)')
     parser.add_argument('--ip', help='(Manual Mode) Existing instance Public IP')
     parser.add_argument('--key', help='(Manual Mode) Path to private key (.pem) file')
+    parser.add_argument('--tl-key', help='TwelveLabs API Key')
     args = parser.parse_args()
     
-    deployer = AWSDeployer(region=args.region, skip_cleanup=args.skip_cleanup)
+    deployer = AWSDeployer(region=args.region, tl_key=args.tl_key, skip_cleanup=args.skip_cleanup)
     
     # Set manual mode args if provided
     if args.ip and args.key:
