@@ -1,0 +1,1 @@
+![SearVids Pipeline](./resources/pipeline.png)
